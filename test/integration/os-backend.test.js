@@ -45,6 +45,16 @@ test(`sets the volume on ${os.type()}`, { skip: skipFull }, async () => {
 	assert.ok(Math.abs((await backend.getVolume()) - original.volume) <= 1)
 })
 
+test(`sets the volume to exactly 0 and back on ${os.type()}`, { skip: skipFull }, async () => {
+	// Regression: the Windows helper silently ignored "0".
+	await backend.setVolume(1)
+	assert.ok((await backend.getVolume()) <= 2)
+	await backend.setVolume(0)
+	assert.equal(await backend.getVolume(), 0)
+	await backend.setVolume(original.volume)
+	assert.ok(Math.abs((await backend.getVolume()) - original.volume) <= 1)
+})
+
 test(`mutes and unmutes on ${os.type()}`, { skip: skipFull }, async () => {
 	await backend.setMuted(!original.muted)
 	assert.equal(await backend.getMuted(), !original.muted)

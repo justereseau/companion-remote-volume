@@ -41,6 +41,19 @@ export function parseVolumeInfo(stdout) {
 	return { volume: Number(match[1]), muted: match[2] === '1' }
 }
 
+/**
+ * The helper treats a numeric argument of 0 ("0", "0.0", "00") as "no value" and silently leaves
+ * the volume unchanged. "1e-9" is parsed as a number > 0 but lands on scalar 0.0 (the endpoint's
+ * minimum, e.g. -74 dB), measured identical to IAudioEndpointVolume::SetMasterVolumeLevelScalar(0).
+ */
+export const HELPER_ZERO_ARG = '1e-9'
+
+/** Command-line argument for a volume in 0..100. */
+export function volumeArg(val) {
+	const v = toVolume(val)
+	return v === 0 ? HELPER_ZERO_ARG : String(v)
+}
+
 export function createWindowsBackend({ execFile = nodeExecFile, helperPath = HELPER_PATH } = {}) {
 	const run = (...args) => runFile(execFile, helperPath, args)
 	const info = async () => parseVolumeInfo(await run())
@@ -49,7 +62,7 @@ export function createWindowsBackend({ execFile = nodeExecFile, helperPath = HEL
 		getVolume: async () => (await info()).volume,
 		getMuted: async () => (await info()).muted,
 		setVolume: async (val) => {
-			await run(String(toVolume(val)))
+			await run(volumeArg(val))
 		},
 		setMuted: async (val) => {
 			await run(val ? 'mute' : 'unmute')
