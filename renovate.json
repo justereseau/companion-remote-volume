@@ -5,7 +5,8 @@
 		":dependencyDashboard",
 		"helpers:pinGitHubActionDigestsToSemver",
 		":maintainLockFilesWeekly",
-		"security:minimumReleaseAgeNpm"
+		"security:minimumReleaseAgeNpm",
+		":semanticCommits"
 	],
 	"forkProcessing": "enabled",
 	"labels": ["dependencies"],
@@ -22,11 +23,13 @@
 	},
 	"packageRules": [
 		{
-			"description": "Electron ships Chromium security fixes almost weekly – update as soon as they are out",
+			"description": "Electron ships Chromium security fixes almost weekly – update as soon as they are out. It is a devDependency but ships inside the app, so its updates are fix(deps) and trigger a release-please patch release.",
 			"matchPackageNames": ["electron"],
 			"groupName": "electron",
 			"schedule": ["at any time"],
-			"minimumReleaseAge": "1 day"
+			"minimumReleaseAge": "1 day",
+			"semanticCommitType": "fix",
+			"semanticCommitScope": "deps"
 		},
 		{
 			"description": "Keep electron-builder and its sub-packages in one PR",

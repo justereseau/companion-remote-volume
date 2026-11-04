@@ -3,9 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
+  # Run by hand on the release-please branch: PRs opened with the built-in GITHUB_TOKEN do not
+  # trigger workflows, and these checks are required to merge the release PR.
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Re-attach installers to an existing release (e.g. v1.2.0). Run from that tag. Leave empty for a normal CI run.'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -104,7 +110,8 @@ jobs:
 
   dependency-review:
     name: Dependency review
-    if: github.event_name == 'pull_request'
+    # Also on manual runs of a branch (e.g. the release PR), comparing it against main.
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -113,6 +120,40 @@ jobs:
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
+          base-ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          head-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  conventional-commits:
+    name: Conventional commits
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # release-please derives versions and the changelog from commit messages on main, so the PR
+      # title (squash merges) and every commit (merge commits) must follow Conventional Commits.
+      - name: Check PR title and commit messages
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          re='^(feat|fix|perf|refactor|revert|docs|test|build|ci|chore|style)(\([a-z0-9._/-]+\))?!?: .+'
+          bad=0
+          if ! [[ "$TITLE" =~ $re ]]; then
+            echo "::error::PR title is not a Conventional Commit: $TITLE"; bad=1
+          fi
+          while IFS= read -r subject; do
+            if ! [[ "$subject" =~ $re ]]; then
+              echo "::error::Commit message is not a Conventional Commit: $subject"; bad=1
+            fi
+          done < <(git log --no-merges --format=%s "$BASE..$HEAD")
+          if [[ $bad == 1 ]]; then
+            echo "Use e.g. 'fix: …', 'feat: …', 'feat!: …' (breaking), 'chore: …', 'ci: …', 'docs: …'." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
   build:
     name: Build (${{ matrix.os }})
@@ -176,14 +217,56 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  release:
-    name: GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+  # release-please keeps a release PR (version bump + CHANGELOG) up to date from the Conventional
+  # Commits on main. Merging that PR makes this job create the tag and GitHub release; the builds
+  # of the same run are then attached by `publish`. Uses the built-in GITHUB_TOKEN, so the release
+  # PR does not trigger CI by itself: run this workflow manually on its branch before merging.
+  release-please:
+    name: Release PR / tag
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      sha: ${{ steps.release.outputs.sha }}
     steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    name: Attach installers to release
+    needs: [release-please, build, integration]
+    # always(): release-please is skipped on manual runs, which must not skip this job.
+    if: >-
+      always() && needs.build.result == 'success' && needs.integration.result == 'success' &&
+      (needs.release-please.outputs.release_created == 'true' ||
+       (github.event_name == 'workflow_dispatch' && inputs.release_tag != ''))
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publish-release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release-please.outputs.tag_name || inputs.release_tag }}
+    steps:
+      # Installers must come from exactly the tagged commit.
+      - name: Check that this run built the tagged commit
+        run: |
+          tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+          if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+            echo "::error::$TAG points to $tag_sha but this run built $GITHUB_SHA. Run the workflow from the tag $TAG."
+            exit 1
+          fi
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: build-*
@@ -193,7 +276,5 @@ jobs:
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
 
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          files: dist/*
-          generate_release_notes: true
+      - name: Upload to the GitHub release
+        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
