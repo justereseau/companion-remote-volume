@@ -108,6 +108,66 @@ jobs:
           RV_INTEGRATION: ${{ runner.os == 'Windows' && 'no-device' || '1' }}
         run: npm run test:integration
 
+  core:
+    name: Audio core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            integration: '1'
+          # Hosted Windows runners have no audio endpoint (HRESULT 0x80070490): test that path.
+          - os: windows-latest
+            integration: no-device
+          - os: macos-latest
+            integration: '1'
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # libpulse for building, plus a virtual sound card: a PulseAudio null sink as default output.
+      - name: libpulse and a virtual sound card (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libpulse-dev pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_sink
+          pactl set-default-sink ci_sink
+          pactl list short sinks
+
+      # Hosted runners ship rustup; core/rust-toolchain.toml selects the channel.
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: core
+
+      - name: Build
+        run: cargo build --release
+
+      - name: TEMP print lockfile
+        if: runner.os == 'Linux'
+        shell: bash
+        run: echo '=====LOCK-BEGIN====='; cat Cargo.lock; echo '=====LOCK-END====='
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Unit tests, stdio protocol tests, and the audio tests selected by RV_INTEGRATION.
+      - name: Test
+        env:
+          RV_INTEGRATION: ${{ matrix.integration }}
+          RV_EXPECT_SINK: ${{ runner.os == 'Linux' && 'ci_sink' || '' }}
+        run: cargo test -- --nocapture
+
   dependency-review:
     name: Dependency review
     # Also on manual runs of a branch (e.g. the release PR), comparing it against main.
