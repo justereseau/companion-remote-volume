@@ -71,7 +71,7 @@ Releases are managed by [release-please](https://github.com/googleapis/release-p
 - Write PR titles and commit messages as `fix: …` (patch), `feat: …` (minor) or `feat!: …` / a `BREAKING CHANGE:` footer (major). `chore:`, `ci:`, `docs:`, `test:` and `refactor:` don't trigger a release. The **Conventional commits** check enforces this on PRs. Renovate already writes `fix(deps): …` for anything that ships in the app, including Electron.
 - On every push to `main`, release-please updates a **release PR** (`chore(main): release x.y.z`) that bumps `package.json`/`package-lock.json` and updates `CHANGELOG.md`.
 - **To release:**
-  1. Open the release PR. It is created with the built-in token, so CI does not start by itself. Go to **Actions → CI → Run workflow**, pick the `release-please--branches--main` branch and run it. This produces the required checks.
+  1. Open the release PR. It is created with the built-in token, so CI does not start by itself. Go to **Actions → CI → Run workflow**, pick the `release-please--branches--main--components--remote-volume` branch and run it. This produces the required checks.
   2. Merge the release PR. The CI run on `main` creates the `vX.Y.Z` tag and GitHub release, then attaches the Windows/macOS/Linux installers and `SHA256SUMS.txt` built in that same run.
 - If attaching the installers ever fails, run **Actions → CI → Run workflow** from the tag (e.g. `v1.2.0`) with `release_tag` set to it.
 

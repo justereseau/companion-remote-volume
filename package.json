@@ -21,6 +21,7 @@
 		"appId": "com.utsgmbh.volumeremote",
 		"productName": "Remote Volume",
 		"publish": null,
+		"artifactName": "remote-volume-${version}-${os}-${arch}.${ext}",
 		"files": [
 			"main.js",
 			"volumeController.js",
