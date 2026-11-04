@@ -211,7 +211,7 @@ fn audio_with_a_real_device() {
         assert!(d["default"].is_boolean(), "{d}");
     }
     assert_eq!(devices.iter().filter(|d| d["default"] == true).count(), 1, "{devices:?}");
-    if let Ok(expected) = env::var("RV_EXPECT_SINK") {
+    if let Some(expected) = env::var("RV_EXPECT_SINK").ok().filter(|v| !v.is_empty()) {
         let sink = devices
             .iter()
             .find(|d| d["id"] == expected.as_str())
