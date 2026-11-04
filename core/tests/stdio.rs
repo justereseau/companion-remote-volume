@@ -233,7 +233,6 @@ fn audio_with_a_real_device() {
     let caps = &ready["data"];
     assert_eq!(caps["available"], true, "no audio backend answered: {caps}");
     assert_eq!(caps["devices"], true);
-    assert_eq!(caps["volume"], true);
 
     let devices = core.ok("listOutputDevices", None)["devices"]
         .as_array()
@@ -260,6 +259,20 @@ fn audio_with_a_real_device() {
             "{expected} should be the default device"
         );
     }
+    eprintln!(
+        "devices: {devices:?}
+capabilities: {caps}"
+    );
+
+    // Some outputs have no software volume (HDMI/DisplayPort monitors, fixed-level devices on
+    // macOS). The core must say so instead of failing mysteriously.
+    if caps["volume"] != true {
+        assert_eq!(core.error_code("getVolume", None), "unsupported");
+        assert_eq!(core.error_code("setVolume", Some(json!(10))), "unsupported");
+        eprintln!("the default output device has no volume control; volume steps skipped");
+        return;
+    }
+
     let state = core.ok("getState", None);
     let default_name = devices.iter().find(|d| d["default"] == true).unwrap()["name"].clone();
     assert_eq!(state["outputDevice"], default_name);
