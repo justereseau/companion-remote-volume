@@ -1,29 +1,37 @@
-import execa from 'execa' // Use import instead of require
+import { execFile as nodeExecFile } from 'node:child_process'
+import { runFile, toVolume } from '../lib/exec.js'
 
-async function osascript(cmd) {
-	return (await execa('osascript', ['-e', cmd])).stdout
+/** Parse `output volume of (get volume settings)`. Devices without volume control return "missing value". */
+export function parseVolume(stdout) {
+	const data = String(stdout).trim()
+	if (!/^\d{1,3}$/.test(data) || Number(data) > 100) {
+		throw new Error(`Output device does not report a volume (osascript returned ${JSON.stringify(data.slice(0, 64))})`)
+	}
+	return Number(data)
 }
 
-export async function getVolume() {
-	return parseInt(await osascript('output volume of (get volume settings)'), 10)
+/** Parse `output muted of (get volume settings)`. */
+export function parseMuted(stdout) {
+	const data = String(stdout).trim()
+	if (data === 'true') return true
+	if (data === 'false') return false
+	throw new Error(`Output device does not report a mute state (osascript returned ${JSON.stringify(data.slice(0, 64))})`)
 }
 
-export async function setVolume(val) {
-	await osascript('set volume output volume ' + val)
+export function createDarwinBackend({ execFile = nodeExecFile } = {}) {
+	const osascript = (script) => runFile(execFile, 'osascript', ['-e', script])
+
+	return {
+		getVolume: async () => parseVolume(await osascript('output volume of (get volume settings)')),
+		getMuted: async () => parseMuted(await osascript('output muted of (get volume settings)')),
+		// Values are interpolated into AppleScript, so they are forced to a safe integer first.
+		setVolume: async (val) => {
+			await osascript(`set volume output volume ${toVolume(val)}`)
+		},
+		setMuted: async (val) => {
+			await osascript(`set volume ${val ? 'with' : 'without'} output muted`)
+		},
+	}
 }
 
-export async function getMuted() {
-	return (await osascript('output muted of (get volume settings)')) === 'true'
-}
-
-export async function setMuted(val) {
-	await osascript('set volume ' + (val ? 'with' : 'without') + ' output muted')
-}
-
-// Export functions
-export default {
-	getVolume,
-	setVolume,
-	getMuted,
-	setMuted,
-}
+export const { getVolume, setVolume, getMuted, setMuted } = createDarwinBackend()

@@ -3,6 +3,10 @@
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta
+			http-equiv="Content-Security-Policy"
+			content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		/>
 		<title>Remote Volume</title>
 		<style>
 			body {
@@ -40,6 +44,8 @@
 			}
 
 			input[type='number'],
+			input[type='text'],
+			select,
 			input[type='checkbox'] {
 				margin-top: 5px;
 				padding: 10px;
@@ -57,7 +63,31 @@
 				margin-right: 10px;
 			}
 
+			select {
+				width: 100%;
+			}
+
+			.row {
+				display: flex;
+				gap: 8px;
+			}
+
+			.row button {
+				width: auto;
+				margin-top: 5px;
+				padding: 0 12px;
+				font-size: 14px;
+			}
+
+			.hint {
+				font-size: 12px;
+				color: #aaa;
+				margin-top: 4px;
+			}
+
 			input[type='number']:focus,
+			input[type='text']:focus,
+			select:focus,
 			input[type='checkbox']:focus {
 				outline: none;
 				background-color: #444444;
@@ -102,7 +132,18 @@
 		<div class="container">
 			<h1>Remote Volume</h1>
 			<label for="port">WebSocket Port:</label>
-			<input type="number" id="port" value="2501" />
+			<input type="number" id="port" value="2501" min="1" max="65535" />
+			<label for="host">Accept connections from:</label>
+			<select id="host">
+				<option value="0.0.0.0">Network (all interfaces)</option>
+				<option value="127.0.0.1">This computer only</option>
+			</select>
+			<label for="token">Access token (optional):</label>
+			<div class="row">
+				<input type="text" id="token" autocomplete="off" spellcheck="false" placeholder="none" />
+				<button id="generateToken" type="button">Generate</button>
+			</div>
+			<div class="hint">If set, clients must connect to ws://host:port/?token=&lt;token&gt;</div>
 			<br />
 			<label for="runOnStartup">
 				<input type="checkbox" id="runOnStartup" />
@@ -118,6 +159,7 @@
 			<input type="number" id="pollingInterval" value="1000" min="100" max="10000" disabled />
 			<br />
 			<button id="save">Save</button>
+			<div id="status" class="hint" role="status"></div>
 
 			<footer>
 				Software licensed under the MIT License.<br />
@@ -125,53 +167,6 @@
 			</footer>
 		</div>
 
-		<script>
-			window.electron.receive('load-config', (config) => {
-				document.getElementById('port').value = config.websocket.port
-				document.getElementById('runOnStartup').checked = config.runOnStartup
-				document.getElementById('enablePolling').checked = config.polling.enabled
-				document.getElementById('pollingInterval').value = config.polling.interval
-				document.getElementById('pollingInterval').disabled = !config.polling.enabled
-			})
-
-			const saveConfig = () => {
-				var port = parseInt(document.getElementById('port').value, 10)
-				var runOnStartupVal = document.getElementById('runOnStartup').checked
-				var enablePolling = document.getElementById('enablePolling').checked
-				var pollingInterval = parseInt(document.getElementById('pollingInterval').value, 10)
-
-				if (isNaN(port) || port < 1 || port > 65535) {
-					port = 2501
-				}
-
-				if (enablePolling) {
-					if (isNaN(pollingInterval) || pollingInterval === 0) {
-						pollingInterval = 500
-					} else if (pollingInterval < 100) {
-						pollingInterval = 100
-					} else if (pollingInterval > 10000) {
-						pollingInterval = 10000
-					}
-				}
-
-				window.electron.send('save-config', {
-					websocket: { port },
-					runOnStartup: runOnStartupVal,
-					polling: { enabled: enablePolling, interval: pollingInterval },
-				})
-			}
-
-			document.getElementById('save').addEventListener('click', saveConfig)
-
-			document.getElementById('port').addEventListener('keydown', (event) => {
-				if (event.key === 'Enter') {
-					saveConfig()
-				}
-			})
-
-			document.getElementById('enablePolling').addEventListener('change', (event) => {
-				document.getElementById('pollingInterval').disabled = !event.target.checked
-			})
-		</script>
+		<script src="settings.js"></script>
 	</body>
 </html>
