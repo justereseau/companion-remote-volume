@@ -51,7 +51,8 @@ fn enumerator() -> AudioResult<IMMDeviceEnumerator> {
 
 /// Re-resolved on every call: the default device can change at any time.
 fn default_endpoint() -> AudioResult<IAudioEndpointVolume> {
-    let device = unsafe { enumerator()?.GetDefaultAudioEndpoint(eRender, eConsole) }.map_err(map_err)?;
+    let device =
+        unsafe { enumerator()?.GetDefaultAudioEndpoint(eRender, eConsole) }.map_err(map_err)?;
     unsafe { device.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) }.map_err(map_err)
 }
 
@@ -68,7 +69,12 @@ unsafe fn device_name(device: &IMMDevice) -> AudioResult<String> {
     let raw = PropVariantToStringAlloc(&value).map_err(map_err)?;
     let name = raw.to_string();
     CoTaskMemFree(Some(raw.0 as *const c_void));
-    name.map_err(|e| AudioError::new(ErrorCode::Internal, format!("device name is not UTF-16: {e}")))
+    name.map_err(|e| {
+        AudioError::new(
+            ErrorCode::Internal,
+            format!("device name is not UTF-16: {e}"),
+        )
+    })
 }
 
 impl Backend for Wasapi {
@@ -92,8 +98,8 @@ impl Backend for Wasapi {
             Err(e) if map_err(e.clone()).code == ErrorCode::NoDevice => None,
             Err(e) => return Err(map_err(e)),
         };
-        let collection =
-            unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) }.map_err(map_err)?;
+        let collection = unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) }
+            .map_err(map_err)?;
         let count = unsafe { collection.GetCount() }.map_err(map_err)?;
         let mut devices = Vec::with_capacity(count as usize);
         for i in 0..count {
@@ -107,14 +113,17 @@ impl Backend for Wasapi {
     }
 
     fn get_volume(&mut self) -> AudioResult<u8> {
-        let scalar = unsafe { default_endpoint()?.GetMasterVolumeLevelScalar() }.map_err(map_err)?;
+        let scalar =
+            unsafe { default_endpoint()?.GetMasterVolumeLevelScalar() }.map_err(map_err)?;
         Ok(scalar_to_percent(scalar))
     }
 
     fn set_volume(&mut self, percent: u8) -> AudioResult<u8> {
         let endpoint = default_endpoint()?;
-        unsafe { endpoint.SetMasterVolumeLevelScalar(percent_to_scalar(percent), std::ptr::null()) }
-            .map_err(map_err)?;
+        unsafe {
+            endpoint.SetMasterVolumeLevelScalar(percent_to_scalar(percent), std::ptr::null())
+        }
+        .map_err(map_err)?;
         let scalar = unsafe { endpoint.GetMasterVolumeLevelScalar() }.map_err(map_err)?;
         Ok(scalar_to_percent(scalar))
     }

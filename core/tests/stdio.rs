@@ -33,22 +33,35 @@ impl Core {
             .expect("spawn the core binary");
         let stdin = child.stdin.take();
         let stdout = BufReader::new(child.stdout.take().unwrap());
-        Core { child, stdin, stdout, next_id: 1 }
+        Core {
+            child,
+            stdin,
+            stdout,
+            next_id: 1,
+        }
     }
 
     /// Spawn and consume the `ready` event.
     fn start() -> (Core, Value) {
         let mut core = Core::spawn();
         let ready = core.read();
-        assert_eq!(ready["event"], "ready", "first line must be the ready event: {ready}");
+        assert_eq!(
+            ready["event"], "ready",
+            "first line must be the ready event: {ready}"
+        );
         (core, ready)
     }
 
     fn read(&mut self) -> Value {
         let mut line = String::new();
-        self.stdout.read_line(&mut line).expect("read a line from the core");
+        self.stdout
+            .read_line(&mut line)
+            .expect("read a line from the core");
         assert!(!line.is_empty(), "the core closed stdout");
-        assert!(line.ends_with('\n'), "replies are newline-terminated: {line:?}");
+        assert!(
+            line.ends_with('\n'),
+            "replies are newline-terminated: {line:?}"
+        );
         serde_json::from_str(&line).unwrap_or_else(|e| panic!("reply is not JSON ({e}): {line:?}"))
     }
 
@@ -92,7 +105,9 @@ impl Core {
     }
 
     fn set_volume(&mut self, percent: u64) -> u64 {
-        self.ok("setVolume", Some(json!(percent)))["volume"].as_u64().unwrap()
+        self.ok("setVolume", Some(json!(percent)))["volume"]
+            .as_u64()
+            .unwrap()
     }
 
     fn muted(&mut self) -> bool {
@@ -100,7 +115,9 @@ impl Core {
     }
 
     fn set_muted(&mut self, muted: bool) -> bool {
-        self.ok("setMuted", Some(json!(muted)))["muted"].as_bool().unwrap()
+        self.ok("setMuted", Some(json!(muted)))["muted"]
+            .as_bool()
+            .unwrap()
     }
 }
 
@@ -145,11 +162,26 @@ fn rejects_malformed_requests_and_keeps_serving() {
         (r#"{"action":"getVolume"}"#, "invalid_request"),
         (r#"{"id":1}"#, "invalid_request"),
         (r#"{"id":1,"action":"explode"}"#, "unknown_action"),
-        (r#"{"id":1,"action":"setVolume","value":101}"#, "invalid_value"),
-        (r#"{"id":1,"action":"setVolume","value":-1}"#, "invalid_value"),
-        (r#"{"id":1,"action":"setVolume","value":"7"}"#, "invalid_value"),
-        (r#"{"id":1,"action":"setMuted","value":"yes"}"#, "invalid_value"),
-        (r#"{"id":1,"action":"getVolume","device":"x"}"#, "unsupported"),
+        (
+            r#"{"id":1,"action":"setVolume","value":101}"#,
+            "invalid_value",
+        ),
+        (
+            r#"{"id":1,"action":"setVolume","value":-1}"#,
+            "invalid_value",
+        ),
+        (
+            r#"{"id":1,"action":"setVolume","value":"7"}"#,
+            "invalid_value",
+        ),
+        (
+            r#"{"id":1,"action":"setMuted","value":"yes"}"#,
+            "invalid_value",
+        ),
+        (
+            r#"{"id":1,"action":"getVolume","device":"x"}"#,
+            "unsupported",
+        ),
     ] {
         let reply = core.raw(line);
         assert_eq!(reply["ok"], false, "{line}: {reply}");
@@ -203,20 +235,30 @@ fn audio_with_a_real_device() {
     assert_eq!(caps["devices"], true);
     assert_eq!(caps["volume"], true);
 
-    let devices = core.ok("listOutputDevices", None)["devices"].as_array().unwrap().clone();
+    let devices = core.ok("listOutputDevices", None)["devices"]
+        .as_array()
+        .unwrap()
+        .clone();
     assert!(!devices.is_empty(), "no output devices listed");
     for d in &devices {
         assert!(d["id"].as_str().is_some_and(|s| !s.is_empty()), "{d}");
         assert!(d["name"].as_str().is_some_and(|s| !s.is_empty()), "{d}");
         assert!(d["default"].is_boolean(), "{d}");
     }
-    assert_eq!(devices.iter().filter(|d| d["default"] == true).count(), 1, "{devices:?}");
+    assert_eq!(
+        devices.iter().filter(|d| d["default"] == true).count(),
+        1,
+        "{devices:?}"
+    );
     if let Some(expected) = env::var("RV_EXPECT_SINK").ok().filter(|v| !v.is_empty()) {
         let sink = devices
             .iter()
             .find(|d| d["id"] == expected.as_str())
             .unwrap_or_else(|| panic!("{expected} not listed in {devices:?}"));
-        assert_eq!(sink["default"], true, "{expected} should be the default device");
+        assert_eq!(
+            sink["default"], true,
+            "{expected} should be the default device"
+        );
     }
     let state = core.ok("getState", None);
     let default_name = devices.iter().find(|d| d["default"] == true).unwrap()["name"].clone();
@@ -225,7 +267,11 @@ fn audio_with_a_real_device() {
     // Run every step, restore the system state, then assert, so a failure leaves nothing behind.
     let original_volume = core.volume();
     let original_muted = core.muted_if(caps["mute"] == true);
-    let target = if original_volume >= 50 { original_volume - 2 } else { original_volume + 2 };
+    let target = if original_volume >= 50 {
+        original_volume - 2
+    } else {
+        original_volume + 2
+    };
 
     let set_reply = core.set_volume(target);
     let read_back = core.volume();
@@ -251,13 +297,22 @@ fn audio_with_a_real_device() {
     let restored = core.volume();
 
     // Drivers may quantise volume steps; allow 1% of rounding like the JS integration test.
-    assert!(set_reply.abs_diff(target) <= 1, "set {target}, reply {set_reply}");
-    assert_eq!(read_back, set_reply, "getVolume must agree with the setVolume reply");
+    assert!(
+        set_reply.abs_diff(target) <= 1,
+        "set {target}, reply {set_reply}"
+    );
+    assert_eq!(
+        read_back, set_reply,
+        "getVolume must agree with the setVolume reply"
+    );
     assert!(at_one <= 2, "set 1, got {at_one}");
     assert_eq!(at_zero, 0, "volume 0 must really reach 0");
     assert_eq!(zero_read_back, 0);
     assert_eq!(state_at_zero, 0);
-    assert!(restored.abs_diff(original_volume) <= 1, "restore {original_volume}, got {restored}");
+    assert!(
+        restored.abs_diff(original_volume) <= 1,
+        "restore {original_volume}, got {restored}"
+    );
     if let Some((flipped, set, read, back)) = mute_steps {
         assert_eq!(set, flipped);
         assert_eq!(read, flipped);
@@ -276,7 +331,10 @@ fn audio_without_a_device() {
         return;
     }
     let (mut core, ready) = Core::start();
-    assert_eq!(ready["data"]["available"], true, "the audio API itself should answer: {ready}");
+    assert_eq!(
+        ready["data"]["available"], true,
+        "the audio API itself should answer: {ready}"
+    );
 
     // Enumeration succeeds with an empty list...
     let devices = core.ok("listOutputDevices", None);

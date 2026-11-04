@@ -108,7 +108,11 @@ impl Conn {
             .introspect()
             .get_sink_info_list(move |result| match result {
                 ListResult::Item(info) => sinks.borrow_mut().push(Sink {
-                    name: info.name.as_ref().map(|n| n.to_string()).unwrap_or_default(),
+                    name: info
+                        .name
+                        .as_ref()
+                        .map(|n| n.to_string())
+                        .unwrap_or_default(),
                     description: info
                         .description
                         .as_ref()
@@ -139,7 +143,11 @@ impl Conn {
             .ok_or_else(|| AudioError::new(ErrorCode::NoDevice, "default output sink not found"))
     }
 
-    fn confirm(&mut self, accepted: Rc<Cell<bool>>, op: Operation<dyn FnMut(bool)>) -> AudioResult<()> {
+    fn confirm(
+        &mut self,
+        accepted: Rc<Cell<bool>>,
+        op: Operation<dyn FnMut(bool)>,
+    ) -> AudioResult<()> {
         self.wait(op)?;
         if accepted.get() {
             Ok(())

@@ -61,7 +61,12 @@ extern "C" {
 
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
-    fn CFStringGetCString(string: *const c_void, buffer: *mut c_char, size: isize, encoding: u32) -> u8;
+    fn CFStringGetCString(
+        string: *const c_void,
+        buffer: *mut c_char,
+        size: isize,
+        encoding: u32,
+    ) -> u8;
     fn CFRelease(object: *const c_void);
 }
 
@@ -103,7 +108,10 @@ fn global_addr(selector: u32) -> PropertyAddress {
 }
 
 fn status_err(what: &str, status: OSStatus) -> AudioError {
-    AudioError::new(ErrorCode::Internal, format!("{what} failed (OSStatus {status})"))
+    AudioError::new(
+        ErrorCode::Internal,
+        format!("{what} failed (OSStatus {status})"),
+    )
 }
 
 /// Read a fixed-size property. `init` provides the type and the starting value.
@@ -157,7 +165,8 @@ fn settable(object: AudioObjectId, address: PropertyAddress) -> bool {
 
 fn property_size(object: AudioObjectId, address: PropertyAddress) -> Result<u32, OSStatus> {
     let mut size = 0u32;
-    let status = unsafe { AudioObjectGetPropertyDataSize(object, &address, 0, ptr::null(), &mut size) };
+    let status =
+        unsafe { AudioObjectGetPropertyDataSize(object, &address, 0, ptr::null(), &mut size) };
     if status == 0 {
         Ok(size)
     } else {
@@ -177,14 +186,25 @@ fn string_property(object: AudioObjectId, selector: u32) -> Option<String> {
     if ok == 0 {
         return None;
     }
-    let bytes: Vec<u8> = buffer.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+    let bytes: Vec<u8> = buffer
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
     String::from_utf8(bytes).ok()
 }
 
 fn default_output() -> AudioResult<AudioObjectId> {
-    match get::<AudioObjectId>(SYSTEM_OBJECT, global_addr(HW_DEFAULT_OUTPUT_DEVICE), UNKNOWN_OBJECT) {
+    match get::<AudioObjectId>(
+        SYSTEM_OBJECT,
+        global_addr(HW_DEFAULT_OUTPUT_DEVICE),
+        UNKNOWN_OBJECT,
+    ) {
         Ok(device) if device != UNKNOWN_OBJECT => Ok(device),
-        Ok(_) => Err(AudioError::new(ErrorCode::NoDevice, "no default output device")),
+        Ok(_) => Err(AudioError::new(
+            ErrorCode::NoDevice,
+            "no default output device",
+        )),
         Err(status) => Err(status_err("reading the default output device", status)),
     }
 }
@@ -216,13 +236,17 @@ fn volume_controls(device: AudioObjectId) -> Vec<PropertyAddress> {
 }
 
 fn unsupported(what: &str) -> AudioError {
-    AudioError::new(ErrorCode::Unsupported, format!("the default output device has no {what} control"))
+    AudioError::new(
+        ErrorCode::Unsupported,
+        format!("the default output device has no {what} control"),
+    )
 }
 
 fn read_volume(device: AudioObjectId, controls: &[PropertyAddress]) -> AudioResult<u8> {
     let mut sum = 0.0f32;
     for address in controls {
-        sum += get::<f32>(device, *address, 0.0).map_err(|s| status_err("reading the volume", s))?;
+        sum +=
+            get::<f32>(device, *address, 0.0).map_err(|s| status_err("reading the volume", s))?;
     }
     Ok(scalar_to_percent(sum / controls.len() as f32))
 }
@@ -230,7 +254,9 @@ fn read_volume(device: AudioObjectId, controls: &[PropertyAddress]) -> AudioResu
 fn read_mute(device: AudioObjectId, controls: &[PropertyAddress]) -> AudioResult<bool> {
     let mut all = true;
     for address in controls {
-        all &= get::<u32>(device, *address, 0).map_err(|s| status_err("reading the mute state", s))? != 0;
+        all &= get::<u32>(device, *address, 0)
+            .map_err(|s| status_err("reading the mute state", s))?
+            != 0;
     }
     Ok(all)
 }
@@ -335,7 +361,8 @@ impl Backend for CoreAudio {
             return Err(unsupported("mute"));
         }
         for address in &controls {
-            set::<u32>(device, *address, u32::from(muted)).map_err(|s| status_err("setting the mute state", s))?;
+            set::<u32>(device, *address, u32::from(muted))
+                .map_err(|s| status_err("setting the mute state", s))?;
         }
         read_mute(device, &controls)
     }

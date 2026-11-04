@@ -109,7 +109,10 @@ fn dispatch(
         }
         _ => Err(AudioError::new(
             ErrorCode::UnknownAction,
-            format!("unknown action \"{}\"", action.chars().take(64).collect::<String>()),
+            format!(
+                "unknown action \"{}\"",
+                action.chars().take(64).collect::<String>()
+            ),
         )),
     }
 }
@@ -119,15 +122,29 @@ pub fn handle_line(backend: &mut dyn Backend, line: &[u8]) -> Value {
     let text = match std::str::from_utf8(line) {
         Ok(t) => t,
         Err(_) => {
-            return error_json(Value::Null, ErrorCode::ParseError, "request is not valid UTF-8")
+            return error_json(
+                Value::Null,
+                ErrorCode::ParseError,
+                "request is not valid UTF-8",
+            )
         }
     };
     let parsed: Value = match serde_json::from_str(text) {
         Ok(v) => v,
-        Err(e) => return error_json(Value::Null, ErrorCode::ParseError, &format!("invalid JSON: {e}")),
+        Err(e) => {
+            return error_json(
+                Value::Null,
+                ErrorCode::ParseError,
+                &format!("invalid JSON: {e}"),
+            )
+        }
     };
     let Some(request) = parsed.as_object() else {
-        return error_json(Value::Null, ErrorCode::InvalidRequest, "request must be a JSON object");
+        return error_json(
+            Value::Null,
+            ErrorCode::InvalidRequest,
+            "request must be a JSON object",
+        );
     };
     let id = match request.get("id") {
         Some(v) if v.is_string() || v.is_i64() || v.is_u64() => v.clone(),
@@ -140,7 +157,11 @@ pub fn handle_line(backend: &mut dyn Backend, line: &[u8]) -> Value {
         }
     };
     let Some(action) = request.get("action").and_then(Value::as_str) else {
-        return error_json(id, ErrorCode::InvalidRequest, "action is required and must be a string");
+        return error_json(
+            id,
+            ErrorCode::InvalidRequest,
+            "action is required and must be a string",
+        );
     };
     match dispatch(backend, action, request) {
         Ok(result) => json!({ "id": id, "ok": true, "result": result }),
@@ -189,8 +210,16 @@ mod tests {
         fn list_output_devices(&mut self) -> AudioResult<Vec<Device>> {
             Ok(if self.plugged {
                 vec![
-                    Device { id: "a".into(), name: "Speakers".into(), default: true },
-                    Device { id: "b".into(), name: "Headset".into(), default: false },
+                    Device {
+                        id: "a".into(),
+                        name: "Speakers".into(),
+                        default: true,
+                    },
+                    Device {
+                        id: "b".into(),
+                        name: "Headset".into(),
+                        default: false,
+                    },
                 ]
             } else {
                 vec![]
@@ -236,7 +265,10 @@ mod tests {
     fn set_volume_replies_with_the_value_read_back() {
         let mut m = Mock::new();
         let reply = call(&mut m, r#"{"id":7,"action":"setVolume","value":42}"#);
-        assert_eq!(reply, json!({ "id": 7, "ok": true, "result": { "volume": 42 } }));
+        assert_eq!(
+            reply,
+            json!({ "id": 7, "ok": true, "result": { "volume": 42 } })
+        );
         assert_eq!(m.volume, 42);
     }
 
@@ -257,7 +289,10 @@ mod tests {
 
     #[test]
     fn integral_floats_are_accepted_as_percent() {
-        let reply = call(&mut Mock::new(), r#"{"id":1,"action":"setVolume","value":50.0}"#);
+        let reply = call(
+            &mut Mock::new(),
+            r#"{"id":1,"action":"setVolume","value":50.0}"#,
+        );
         assert_eq!(reply["result"]["volume"], 50);
     }
 
@@ -265,7 +300,10 @@ mod tests {
     fn rejects_bad_volumes_without_touching_the_backend() {
         for bad in ["101", "-1", "1.5", "\"50\"", "null", "true", "1e3"] {
             let mut m = Mock::new();
-            let reply = call(&mut m, &format!(r#"{{"id":1,"action":"setVolume","value":{bad}}}"#));
+            let reply = call(
+                &mut m,
+                &format!(r#"{{"id":1,"action":"setVolume","value":{bad}}}"#),
+            );
             assert_eq!(code(&reply), "invalid_value", "value {bad}");
             assert_eq!(m.volume, 30, "value {bad}");
         }
@@ -276,9 +314,18 @@ mod tests {
     #[test]
     fn set_muted_requires_a_boolean() {
         let mut m = Mock::new();
-        assert_eq!(call(&mut m, r#"{"id":1,"action":"setMuted","value":true}"#)["result"]["muted"], true);
-        assert_eq!(code(&call(&mut m, r#"{"id":2,"action":"setMuted","value":1}"#)), "invalid_value");
-        assert_eq!(code(&call(&mut m, r#"{"id":3,"action":"setMuted"}"#)), "invalid_value");
+        assert_eq!(
+            call(&mut m, r#"{"id":1,"action":"setMuted","value":true}"#)["result"]["muted"],
+            true
+        );
+        assert_eq!(
+            code(&call(&mut m, r#"{"id":2,"action":"setMuted","value":1}"#)),
+            "invalid_value"
+        );
+        assert_eq!(
+            code(&call(&mut m, r#"{"id":3,"action":"setMuted"}"#)),
+            "invalid_value"
+        );
     }
 
     #[test]
@@ -304,9 +351,21 @@ mod tests {
 
     #[test]
     fn no_device_is_an_error_not_a_crash() {
-        let mut m = Mock { plugged: false, ..Mock::new() };
-        assert_eq!(code(&call(&mut m, r#"{"id":1,"action":"getVolume"}"#)), "no_device");
-        assert_eq!(code(&call(&mut m, r#"{"id":2,"action":"setMuted","value":true}"#)), "no_device");
+        let mut m = Mock {
+            plugged: false,
+            ..Mock::new()
+        };
+        assert_eq!(
+            code(&call(&mut m, r#"{"id":1,"action":"getVolume"}"#)),
+            "no_device"
+        );
+        assert_eq!(
+            code(&call(
+                &mut m,
+                r#"{"id":2,"action":"setMuted","value":true}"#
+            )),
+            "no_device"
+        );
         let list = call(&mut m, r#"{"id":3,"action":"listOutputDevices"}"#);
         assert_eq!(list["result"]["devices"], json!([]));
     }
@@ -326,23 +385,38 @@ mod tests {
             assert_eq!(code(&reply), want, "{line}");
             assert_eq!(reply["id"], Value::Null, "{line}");
         }
-        assert_eq!(handle_line(&mut m, &[0xff, 0xfe])["error"]["code"], "parse_error");
+        assert_eq!(
+            handle_line(&mut m, &[0xff, 0xfe])["error"]["code"],
+            "parse_error"
+        );
     }
 
     #[test]
     fn missing_or_unknown_action_keeps_the_id() {
         let mut m = Mock::new();
         let missing = call(&mut m, r#"{"id":5}"#);
-        assert_eq!((code(&missing), &missing["id"]), ("invalid_request", &json!(5)));
+        assert_eq!(
+            (code(&missing), &missing["id"]),
+            ("invalid_request", &json!(5))
+        );
         let unknown = call(&mut m, r#"{"id":6,"action":"launchMissiles"}"#);
-        assert_eq!((code(&unknown), &unknown["id"]), ("unknown_action", &json!(6)));
+        assert_eq!(
+            (code(&unknown), &unknown["id"]),
+            ("unknown_action", &json!(6))
+        );
     }
 
     #[test]
     fn device_argument_is_refused_until_device_selection_exists() {
-        let reply = call(&mut Mock::new(), r#"{"id":1,"action":"getVolume","device":"b"}"#);
+        let reply = call(
+            &mut Mock::new(),
+            r#"{"id":1,"action":"getVolume","device":"b"}"#,
+        );
         assert_eq!(code(&reply), "unsupported");
-        let null = call(&mut Mock::new(), r#"{"id":2,"action":"getVolume","device":null}"#);
+        let null = call(
+            &mut Mock::new(),
+            r#"{"id":2,"action":"getVolume","device":null}"#,
+        );
         assert_eq!(null["ok"], true);
     }
 }
