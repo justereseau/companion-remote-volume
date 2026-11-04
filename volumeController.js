@@ -1,4 +1,4 @@
-import os from 'os'
+import os from 'node:os'
 import { getDevices, getHostAPIs } from '@capaj/naudiodon'
 let impl = null
 
@@ -17,17 +17,19 @@ switch (os.type()) {
 }
 
 export async function getAudioDevice() {
-	const devices = getDevices()
 	const hostAPIs = getHostAPIs()
-	const defaultHostAPI = hostAPIs.defaultHostAPI
-	const defaultOutput = hostAPIs.HostAPIs[hostAPIs.defaultHostAPI].defaultOutput
-	const outputName = devices[defaultOutput].name
+	const defaultOutput = hostAPIs?.HostAPIs?.[hostAPIs.defaultHostAPI]?.defaultOutput
+	// PortAudio reports -1 when there is no output device (e.g. headset unplugged).
+	if (!Number.isInteger(defaultOutput) || defaultOutput < 0) return null
 
-	return outputName
+	const device = getDevices().find((d) => d.id === defaultOutput)
+	return device?.name ?? null
 }
 
+const clampVolume = (value) => Math.min(Math.max(Math.round(Number(value)), 0), 100)
+
 export async function setVolume(value) {
-	return impl.setVolume(value)
+	return impl.setVolume(clampVolume(value))
 }
 
 export async function getVolume() {
@@ -53,12 +55,10 @@ export async function isMuted() {
 
 export async function increaseVolume(amount) {
 	const currentVolume = await impl.getVolume()
-	const newVolume = Math.min(currentVolume + amount, 100)
-	return impl.setVolume(newVolume)
+	return impl.setVolume(clampVolume(currentVolume + amount))
 }
 
 export async function decreaseVolume(amount) {
 	const currentVolume = await impl.getVolume()
-	const newVolume = Math.max(currentVolume - amount, 0)
-	return impl.setVolume(newVolume)
+	return impl.setVolume(clampVolume(currentVolume - amount))
 }

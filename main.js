@@ -1,12 +1,12 @@
-import { app, BrowserWindow, Tray, Menu, ipcMain } from 'electron'
+import { app, BrowserWindow, Tray, Menu, ipcMain, session } from 'electron'
 import { WebSocketServer } from 'ws'
-import path from 'path'
-import os from 'os'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import Store from 'electron-store'
-import { fileURLToPath } from 'url'
-import { dirname } from 'path'
 import AutoLaunch from 'electron-auto-launch'
-import log from 'electron-log'
+import log from 'electron-log/main'
+import { sanitizeConfig } from './lib/config.js'
+import { parseMessage, admitClient, RateLimiter, MAX_PAYLOAD_BYTES } from './lib/protocol.js'
 import {
 	setVolume,
 	getVolume,
@@ -19,12 +19,16 @@ import {
 	getAudioDevice,
 } from './volumeController.js'
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const INDEX_HTML = path.join(__dirname, 'index.html')
+const INDEX_URL = pathToFileURL(INDEX_HTML).href
 
-log.transports.file.file = path.join(app.getPath('userData'), 'logs/main.log')
-
+log.initialize()
+log.transports.file.resolvePathFn = () => path.join(app.getPath('userData'), 'logs', 'main.log')
 log.info('App is starting...')
+
+// Enforce the Chromium sandbox for every renderer.
+app.enableSandbox()
 
 const gotLock = app.requestSingleInstanceLock()
 
@@ -33,146 +37,119 @@ if (!gotLock) {
 	app.quit()
 } else {
 	let wss
+	let mainWindow
+	let tray
+	let isQuitting = false
 	const store = new Store()
-	const currentVersion = '1.0.0'
 
-	let config = store.get('settings') || {
-		websocket: { port: 2501 },
-		runOnStartup: false,
-		polling: { enabled: false, interval: 1000 },
-		version: currentVersion,
-	}
-
-	if (config.version !== currentVersion) {
-		log.info(`Updating configuration version to ${currentVersion}`)
-		config.version = currentVersion
-		store.set('settings', config)
-	}
-
-	const appAutoLauncher = new AutoLaunch({
-		name: 'RemoteVolume',
-		path: app.getPath('exe'),
-	})
+	let config = sanitizeConfig(store.get('settings'))
+	store.set('settings', config)
 
 	const setAutoLaunch = async (enabled) => {
 		log.info(`Auto-start setting changed. Attempting to ${enabled ? 'enable' : 'disable'} auto-launch.`)
-
 		try {
 			if (process.platform === 'linux') {
-				const appAutoLauncher = new AutoLaunch({
-					name: 'RemoteVolume',
-					path: app.getPath('exe'),
-				})
-
-				if (enabled) {
-					await appAutoLauncher.enable()
-					log.info('Auto-launch enabled on Linux.')
-				} else {
-					await appAutoLauncher.disable()
-					log.info('Auto-launch disabled on Linux.')
-				}
+				const launcher = new AutoLaunch({ name: 'RemoteVolume', path: app.getPath('exe') })
+				if (enabled) await launcher.enable()
+				else await launcher.disable()
 			} else {
-				app.setLoginItemSettings({
-					openAtLogin: enabled,
-					openAsHidden: true,
-				})
-				log.info(`Auto-launch ${enabled ? 'enabled' : 'disabled'} on macOS.`)
+				app.setLoginItemSettings({ openAtLogin: enabled, openAsHidden: true })
 			}
+			log.info(`Auto-launch ${enabled ? 'enabled' : 'disabled'} on ${process.platform}.`)
 		} catch (error) {
 			log.error('Failed to change auto-launch setting:', error)
 		}
 	}
 
-	let mainWindow
-	let tray
+	function showWindow() {
+		if (!mainWindow || mainWindow.isDestroyed()) createWindow()
+		mainWindow.show()
+		mainWindow.focus()
+	}
 
 	function createWindow() {
 		mainWindow = new BrowserWindow({
 			width: 400,
-			height: 520,
+			height: 640,
 			resizable: false,
 			webPreferences: {
 				contextIsolation: true,
-				enableRemoteModule: false,
-				preload: path.join(__dirname, 'renderer.js'),
+				nodeIntegration: false,
+				sandbox: true,
+				webSecurity: true,
+				preload: path.join(__dirname, 'preload.cjs'),
 			},
 			show: true,
 			icon: path.join(__dirname, 'icon.ico'),
 		})
 
-		mainWindow.loadFile('index.html')
+		// The settings window must never navigate away or open new windows.
+		mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+		mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
 
-		mainWindow.setMenu(null)
-
-		mainWindow.on('close', (event) => {
-			if (!app.isQuiting) {
-				event.preventDefault()
-				mainWindow.hide()
-			}
-		})
-
-		app.on('activate', () => {
-			if (BrowserWindow.getAllWindows().length === 0) {
-				createWindow()
-			} else {
-				mainWindow.show()
-			}
-		})
-	}
-
-	app.on('ready', async () => {
-		createWindow()
-		if (os.platform() === 'darwin') {
-			app.dock.hide()
-		}
 		mainWindow.webContents.on('did-finish-load', () => {
 			mainWindow.webContents.send('load-config', config)
 		})
 
-		tray = new Tray(path.join(__dirname, 'menuicon.png'))
-		const contextMenu = Menu.buildFromTemplate([
-			{
-				label: 'Show App',
-				click: () => {
-					mainWindow.show()
-				},
-			},
-			{
-				label: 'Quit',
-				click: () => {
-					app.isQuiting = true
-					app.quit()
-				},
-			},
-		])
+		mainWindow.loadFile(INDEX_HTML)
+		mainWindow.setMenu(null)
 
+		mainWindow.on('close', (event) => {
+			if (!isQuitting) {
+				event.preventDefault()
+				mainWindow.hide()
+			}
+		})
+	}
+
+	app.on('second-instance', showWindow)
+	app.on('activate', showWindow)
+	app.on('before-quit', () => {
+		isQuitting = true
+	})
+
+	app.whenReady().then(async () => {
+		// The settings UI needs no browser permissions (camera, notifications, ...).
+		session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
+		session.defaultSession.setPermissionCheckHandler(() => false)
+
+		createWindow()
+		if (process.platform === 'darwin') app.dock.hide()
+
+		tray = new Tray(path.join(__dirname, 'menuicon.png'))
 		tray.setToolTip('Remote Volume')
-		tray.setContextMenu(contextMenu)
+		tray.setContextMenu(
+			Menu.buildFromTemplate([
+				{ label: 'Show App', click: showWindow },
+				{
+					label: 'Quit',
+					click: () => {
+						isQuitting = true
+						app.quit()
+					},
+				},
+			]),
+		)
+		tray.on('click', showWindow)
+
 		await setAutoLaunch(config.runOnStartup)
 		startWebSocketServer()
-		startMonitoring()
 
 		ipcMain.on('save-config', async (event, newConfig) => {
-			config = newConfig
-			store.set('settings', config)
-			mainWindow.webContents.send('load-config', config)
-			event.reply('config-saved', 'Configuration saved successfully!')
-			await setAutoLaunch(config.runOnStartup)
-
-			if (wss) {
-				log.info('Closing existing WebSocket server to apply new configuration.')
-				wss.clients.forEach((client) => {
-					client.close()
-				})
-				wss.close(() => {
-					log.info('WebSocket server closed. Restarting...')
-					startWebSocketServer()
-				})
-			} else {
-				startWebSocketServer()
+			// Only accept configuration from our own settings page.
+			if (event.senderFrame?.url !== INDEX_URL) {
+				log.warn('Rejected save-config from unexpected sender:', event.senderFrame?.url)
+				return
 			}
 
-			startMonitoring()
+			const previous = config
+			config = sanitizeConfig(newConfig, previous)
+			store.set('settings', config)
+			event.reply('load-config', config)
+			event.reply('config-saved', 'Configuration saved successfully!')
+
+			if (previous.runOnStartup !== config.runOnStartup) await setAutoLaunch(config.runOnStartup)
+			restartWebSocketServer()
 		})
 	})
 
@@ -180,146 +157,141 @@ if (!gotLock) {
 	let lastMuteState = null
 	let lastAudioDevice = null
 	let pollingInterval = null
+	let pollInFlight = false
+
+	async function readState() {
+		const [volume, muted, outputDevice] = await Promise.all([getVolume(), isMuted(), getAudioDevice()])
+		return { volume, muted, outputDevice }
+	}
 
 	function startMonitoring() {
-		log.info('Starting volume/mute state monitoring.')
 		if (pollingInterval) clearInterval(pollingInterval)
+		pollingInterval = null
+		if (!config.polling.enabled) return
 
-		if (config.polling.enabled) {
-			pollingInterval = setInterval(async () => {
-				try {
-					const currentVolume = await getVolume()
-					const currentMuteState = await isMuted()
-					const currentAudioDevice = await getAudioDevice()
-
-					if (currentVolume !== lastVolume) {
-						lastVolume = currentVolume
-						broadcastState({ volume: currentVolume })
-					}
-
-					if (currentMuteState !== lastMuteState) {
-						lastMuteState = currentMuteState
-						broadcastState({ muted: currentMuteState })
-					}
-
-					if (currentAudioDevice != lastAudioDevice) {
-						lastAudioDevice = currentAudioDevice
-						broadcastState({ outputDevice: currentAudioDevice })
-					}
-				} catch (error) {
-					log.error('Error monitoring volume/mute state:', error)
+		log.info(`Starting volume/mute state monitoring every ${config.polling.interval} ms.`)
+		pollingInterval = setInterval(async () => {
+			// Skip a tick instead of piling up child processes when the OS is slow.
+			if (pollInFlight) return
+			pollInFlight = true
+			try {
+				const { volume, muted, outputDevice } = await readState()
+				if (volume !== lastVolume) {
+					lastVolume = volume
+					broadcastState({ volume })
 				}
-			}, config.polling.interval)
-		}
+				if (muted !== lastMuteState) {
+					lastMuteState = muted
+					broadcastState({ muted })
+				}
+				if (outputDevice !== lastAudioDevice) {
+					lastAudioDevice = outputDevice
+					broadcastState({ outputDevice })
+				}
+			} catch (error) {
+				log.error('Error monitoring volume/mute state:', error)
+			} finally {
+				pollInFlight = false
+			}
+		}, config.polling.interval)
 	}
 
 	function broadcastState(state) {
-		if (wss && wss.clients) {
-			wss.clients.forEach((client) => {
-				if (client.readyState === client.OPEN) {
-					client.send(JSON.stringify(state))
-				}
-			})
+		if (!wss) return
+		const payload = JSON.stringify(state)
+		for (const client of wss.clients) {
+			if (client.readyState === client.OPEN) client.send(payload)
 		}
+	}
+
+	const commands = {
+		setVolume: (value) => setVolume(value),
+		increaseVolume: (value) => increaseVolume(value),
+		decreaseVolume: (value) => decreaseVolume(value),
+		mute: () => mute(),
+		unmute: () => unmute(),
+		toggleMute: () => toggleMute(),
+		getState: () => readState(),
+		isMuted: async () => ({ muted: await isMuted() }),
+	}
+
+	function restartWebSocketServer() {
+		if (!wss) return startWebSocketServer()
+		log.info('Closing existing WebSocket server to apply new configuration.')
+		const old = wss
+		wss = null
+		for (const client of old.clients) client.terminate()
+		old.close(() => {
+			log.info('WebSocket server closed. Restarting...')
+			startWebSocketServer()
+		})
 	}
 
 	function startWebSocketServer() {
-		const port = config.websocket.port
+		const { port, host } = config.websocket
 
-		if (typeof port !== 'number' || port <= 0) {
-			log.error('Invalid port specified in the configuration.')
-			return
-		}
+		const server = new WebSocketServer({
+			port,
+			host,
+			maxPayload: MAX_PAYLOAD_BYTES,
+			perMessageDeflate: false,
+			verifyClient: ({ req }, done) => {
+				const verdict = admitClient(req, config.websocket, server.clients.size)
+				if (verdict.ok) return done(true)
+				log.warn(`Rejected WebSocket client ${req.socket.remoteAddress}: ${verdict.reason}`)
+				done(false, verdict.code, verdict.reason)
+			},
+		})
+		wss = server
 
-		wss = new WebSocketServer({ port })
-		log.info(`WebSocket server started on ws://localhost:${port}`)
+		server.on('listening', () => {
+			log.info(`WebSocket server listening on ws://${host}:${port}${config.websocket.token ? ' (token required)' : ''}`)
+		})
 
-		wss.on('connection', async (ws) => {
-			const currentVolume = await getVolume()
-			const currentMuteState = await isMuted()
-			const currentAudioDevice = await getAudioDevice()
-			ws.send(JSON.stringify({ volume: currentVolume, muted: currentMuteState, outputDevice: currentAudioDevice }))
+		server.on('error', (error) => {
+			log.error('WebSocket server error:', error)
+		})
 
-			ws.on('message', async (message) => {
+		server.on('connection', async (ws, req) => {
+			log.info(`Client connected from ${req.socket.remoteAddress}`)
+			const limiter = new RateLimiter()
+
+			ws.on('error', (error) => log.warn('WebSocket client error:', error.message))
+
+			ws.on('message', async (raw, isBinary) => {
+				if (isBinary) return
+				if (!limiter.tryRemove()) {
+					ws.send(JSON.stringify({ error: 'Rate limit exceeded' }))
+					return
+				}
+
+				const msg = parseMessage(raw)
+				if (!msg.ok) {
+					log.warn(`Rejected client message: ${msg.error}`)
+					ws.send(JSON.stringify(msg.action ? { action: msg.action, response: { error: msg.error } } : { error: msg.error }))
+					return
+				}
+
 				try {
-					const { action, value } = JSON.parse(message)
-					let response
-
-					const actions = {
-						setVolume: async () => {
-							if (typeof value !== 'number' || value < 0 || value > 100) {
-								log.error('Invalid value for setVolume:', value)
-								return { error: 'Invalid value for setVolume. Must be between 0 and 100.' }
-							}
-							return setVolume(value)
-						},
-						getState: async () => {
-							const currentVolume = await getVolume()
-							const currentMuteState = await isMuted()
-							const currentAudioDevice = await getAudioDevice()
-							return { volume: currentVolume, muted: currentMuteState, outputDevice: currentAudioDevice }
-						},
-						increaseVolume: async () => {
-							if (typeof value !== 'number' || value < 1 || value > 99) {
-								log.error('Invalid value for increaseVolume:', value)
-								return { error: 'Invalid value for increaseVolume. Must be between 1 and 99.' }
-							}
-							return increaseVolume(value)
-						},
-						decreaseVolume: async () => {
-							if (typeof value !== 'number' || value < 1 || value > 99) {
-								log.error('Invalid value for decreaseVolume:', value)
-								return { error: 'Invalid value for decreaseVolume. Must be between 1 and 99.' }
-							}
-							return decreaseVolume(value)
-						},
-						mute: () => mute(),
-						unmute: () => unmute(),
-						toggleMute: () => toggleMute(),
-					}
-
-					if (actions[action]) {
-						response = await actions[action]()
-
-						if (response?.error) {
-							ws.send(JSON.stringify({ action, response }))
-						} else {
-							if (action == 'getState') ws.send(JSON.stringify(response))
-						}
-
-						// if (config.polling.enabled) {
-						// } else {
-						// 	if (action === 'getState') {
-						// 		console.log('Received getState B')
-						// 		ws.send(JSON.stringify(response))
-						// 	} else {
-						// 		const currentVolume = await getVolume()
-						// 		const currentMuteState = await isMuted()
-						// 		ws.send(JSON.stringify({ volume: currentVolume, muted: currentMuteState }))
-						// 	}
-						// }
-					} else {
-						response = { error: 'Invalid action' }
-						ws.send(JSON.stringify({ action, response }))
-						log.error('Invalid action received from client.')
-					}
+					const response = await commands[msg.action](msg.value)
+					if (msg.action === 'getState' || msg.action === 'isMuted') ws.send(JSON.stringify(response))
 				} catch (error) {
-					log.error('Error processing message from client:', error)
-					ws.send(JSON.stringify({ error: 'Failed to process message' }))
+					log.error(`Error executing ${msg.action}:`, error)
+					ws.send(JSON.stringify({ action: msg.action, response: { error: 'Failed to execute action' } }))
 				}
 			})
+
+			try {
+				ws.send(JSON.stringify(await readState()))
+			} catch (error) {
+				log.error('Failed to send initial state:', error)
+			}
 		})
 
 		startMonitoring()
-
-		wss.on('error', (error) => {
-			log.error('WebSocket server error:', error)
-		})
 	}
 
 	app.on('window-all-closed', () => {
-		if (process.platform !== 'darwin') {
-			app.quit()
-		}
+		// Keep running in the tray; quitting happens through the tray menu.
 	})
 }

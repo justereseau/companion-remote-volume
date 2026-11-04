@@ -1,0 +1,54 @@
+{
+	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
+	"extends": [
+		"config:recommended",
+		":dependencyDashboard",
+		"helpers:pinGitHubActionDigestsToSemver",
+		":maintainLockFilesWeekly",
+		"security:minimumReleaseAgeNpm"
+	],
+	"labels": ["dependencies"],
+	"rangeStrategy": "bump",
+	"schedule": ["before 6am on monday"],
+	"prConcurrentLimit": 5,
+	"minimumReleaseAge": "3 days",
+	"osvVulnerabilityAlerts": true,
+	"vulnerabilityAlerts": {
+		"enabled": true,
+		"labels": ["security"],
+		"schedule": ["at any time"],
+		"minimumReleaseAge": null
+	},
+	"packageRules": [
+		{
+			"description": "Electron ships Chromium security fixes almost weekly – update as soon as they are out",
+			"matchPackageNames": ["electron"],
+			"groupName": "electron",
+			"schedule": ["at any time"],
+			"minimumReleaseAge": "1 day"
+		},
+		{
+			"description": "Keep electron-builder and its sub-packages in one PR",
+			"matchPackageNames": ["electron-builder", "app-builder-lib", "dmg-builder", "electron-builder-squirrel-windows", "electron-publish"],
+			"groupName": "electron-builder"
+		},
+		{
+			"description": "Automerge non-major updates of dev tooling and actions once CI is green",
+			"matchDepTypes": ["devDependencies", "action"],
+			"matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"],
+			"matchPackageNames": ["!electron"],
+			"automerge": true
+		},
+		{
+			"description": "Group GitHub Actions",
+			"matchManagers": ["github-actions"],
+			"groupName": "github actions"
+		},
+		{
+			"description": "Node in CI must match the Node bundled with Electron – no automatic major bumps",
+			"matchManagers": ["nvm"],
+			"matchUpdateTypes": ["major"],
+			"enabled": false
+		}
+	]
+}

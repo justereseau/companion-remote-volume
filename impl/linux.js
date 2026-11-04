@@ -1,7 +1,10 @@
-import execa from 'execa'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execFileP = promisify(execFile)
 
 async function amixer(...args) {
-	return (await execa('amixer', args)).stdout
+	return (await execFileP('amixer', args, { timeout: 5000 })).stdout
 }
 
 let defaultDeviceCache = null
@@ -44,7 +47,7 @@ export const getVolume = async () => {
 }
 
 export const setVolume = async (val) => {
-	await amixer('set', await getDefaultDevice(), val + '%')
+	await amixer('set', await getDefaultDevice(), `${Math.min(Math.max(Math.round(Number(val)) || 0, 0), 100)}%`)
 }
 
 export const getMuted = async () => {

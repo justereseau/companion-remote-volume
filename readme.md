@@ -34,7 +34,30 @@ Inside the configuration screen, you can
 - enable or disable the polling feature and set a polling interval.
 - select, wether the application should auto start together with the system.
 
+- choose whether clients may connect from the network or only from this computer.
+- set an optional access token.
+
 ![Setting Window](/docs/images/setting_window.png)
+
+## Security
+
+Anyone who can reach the WebSocket port can change your volume. To limit that:
+
+- **Accept connections from: This computer only.** Binds the server to `127.0.0.1`. Use it when the controller (e.g. Companion) runs on the same machine.
+- **Access token.** When set, clients must connect with `ws://<host>:<port>/?token=<token>` or send an `Authorization: Bearer <token>` header. Otherwise the connection is refused with HTTP 401.
+- **Browser pages are rejected.** Connections carrying an `Origin` header (that is, from a web page) are refused with HTTP 403. This stops any website you visit from controlling your volume through `ws://localhost:2501`. Native clients such as Companion send no `Origin` and are unaffected. To allow a specific web UI, add its origin to `settings.websocket.allowedOrigins` in the config file (`config.json` in the app's user-data folder).
+- Messages are limited to 1 KB, 20 commands/second per client and 32 simultaneous clients.
+
+## Building from source
+
+Requirements: Node.js 24+, and on Windows the "Desktop development with C++" workload of the Visual Studio Build Tools (for the native `naudiodon` module).
+
+```sh
+npm ci
+npm test
+npm start          # run in development
+npm run build:win  # create dist/Remote Volume Setup <version>.exe
+```
 
 ## Usage
 
@@ -56,7 +79,7 @@ When using [Bitfocus Companion](https://bitfocus.io/companion) you don't need th
 
 ### 2. Get State
 
-- **Action**: `g`
+- **Action**: `getState`
 - **Description**: Returns all current audio information
 - **Payload**:
   ```json
@@ -127,7 +150,7 @@ When using [Bitfocus Companion](https://bitfocus.io/companion) you don't need th
 ### 8. Is Muted
 
 - **Action**: `isMuted`
-- **Description**: Checks if the system audio is currently muted.
+- **Description**: Checks if the system audio is currently muted. Replies with `{ "muted": <boolean> }`.
 - **Payload**:
   ```json
   {
