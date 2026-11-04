@@ -175,7 +175,10 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install
 
+      # Not on self-hosted: cargo's registry and target dir already persist there, and the cache
+      # post step hung on the self-hosted Mac (it raised a macOS password prompt).
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment != 'self-hosted'
         with:
           workspaces: core
 
