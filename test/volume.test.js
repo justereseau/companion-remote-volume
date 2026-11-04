@@ -114,6 +114,23 @@ test('mute / unmute / toggleMute / isMuted', async () => {
 	assert.equal(await c.isMuted(), false)
 })
 
+test('getCapabilities: everything new is unsupported unless the backend says otherwise', async () => {
+	const none = { protocolVersion: 2, outputDevices: { list: false, select: false }, apps: { volume: false, mute: false } }
+	assert.deepEqual(await createVolumeController({ backend: fakeBackend(), audio: audio() }).getCapabilities(), none)
+
+	const backend = { ...fakeBackend(), getCapabilities: async () => ({ apps: { volume: true, mute: 'yes' }, rogue: true, protocolVersion: 99 }) }
+	assert.deepEqual(await createVolumeController({ backend, audio: audio() }).getCapabilities(), { ...none, apps: { volume: true, mute: false } })
+})
+
+test('getCapabilities asks the backend each time, since the environment can change', async () => {
+	let pulse = false
+	const backend = { ...fakeBackend(), getCapabilities: () => ({ outputDevices: { list: pulse } }) }
+	const c = createVolumeController({ backend, audio: audio() })
+	assert.equal((await c.getCapabilities()).outputDevices.list, false)
+	pulse = true
+	assert.equal((await c.getCapabilities()).outputDevices.list, true)
+})
+
 test('device name is cached so bursts do not block the thread', async () => {
 	let t = 0
 	const counter = { n: 0 }

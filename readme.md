@@ -174,6 +174,69 @@ When using [Bitfocus Companion](https://bitfocus.io/companion) you don't need th
   }
   ```
 
+### 9. Get Capabilities
+
+- **Action**: `getCapabilities`
+- **Description**: Replies with what this machine supports right now. See [Protocol v2](#protocol-v2).
+- **Payload**:
+  ```json
+  {
+  	"action": "getCapabilities"
+  }
+  ```
+
+## Protocol v2
+
+Protocol v2 adds the building blocks for output-device selection and per-app volume. It **only adds** things; see [Compatibility](#compatibility).
+
+### Capabilities
+
+`getCapabilities` replies with `{ "capabilities": { … } }`. The same `capabilities` object is also the last key of the state message sent when a client connects.
+
+```json
+{
+	"capabilities": {
+		"protocolVersion": 2,
+		"outputDevices": { "list": false, "select": false },
+		"apps": { "volume": false, "mute": false }
+	}
+}
+```
+
+- `protocolVersion` is `2`.
+- The flags depend on the OS **and** on the environment at the time of the question (for example, Linux without a Pulse/PipeWire server reports `false`), so ask again rather than caching forever. Only a literal `true` means supported. This version reports `false` for everything except `protocolVersion`, because no backend implements the new features yet.
+- An action whose capability is `false` is answered with `{ "action": "<action>", "response": { "error": "Not supported on this OS" } }` and does nothing.
+- Capabilities are not part of the state broadcast, and `getState` does not include them.
+
+### Targets
+
+An action that acts on something names it with a string key: `app` for per-app actions, `device` for device actions, for example `{ "action": "setAppVolume", "app": "spotify", "value": 40 }`. Each action takes only the key it declares; other keys are ignored.
+
+A target must be a string of 1–256 characters (counted as Unicode characters) with no control characters (such as NUL, newline, tab, DEL), and valid Unicode text. A missing or invalid target is rejected with `Invalid <key> for <action>. Must be a string of 1-256 characters without control characters.` Targets are never put into a shell command or script; they reach the native audio code as program arguments or JSON. The 1 KB payload limit applies unchanged.
+
+### Errors
+
+Errors use the existing `{ "action": "…", "response": { "error": "…" } }` shape. Protocol v2 adds three texts, which clients may match on:
+
+| Error                      | Meaning                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------ |
+| `Not supported on this OS` | The capability the action needs is `false` right now.                                |
+| `Device not found`         | The `device` target does not exist (any more).                                       |
+| `App not found`            | The `app` target does not exist (any more).                                          |
+
+These are distinct from `Failed to execute action`, which still means an unexpected failure.
+
+### Structured state
+
+State fields keep being sent as one message per field (`{ "volume": 40 }`). Fields that hold lists, such as the upcoming `outputDevices` and `apps`, are sent in full, but only when their content changed since clients were last told. A scalar field is sent exactly as before.
+
+### Compatibility
+
+- Every v1 action, its payload, its validation and its replies are unchanged, byte for byte. Today's Bitfocus Companion module keeps working without an update.
+- The only change a v1 client can observe is one additional key, `capabilities`, in the state message sent on connect. Clients must ignore keys they do not know, as they already have to for the other state messages.
+- New versions add actions, keys and error texts but do not change or remove existing ones. `capabilities.protocolVersion` tells a client which additions to expect.
+- The security model is unchanged: bind address, access token, `Origin` rejection, the 1 KB payload limit, 20 messages per second and 32 clients.
+
 ## Credits
 
 The main part for controlling the system volume is based on the following project:
