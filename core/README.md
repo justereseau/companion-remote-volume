@@ -45,7 +45,8 @@ echo '{"id":1,"action":"listOutputDevices"}' | cargo run -q
 Hosted macOS runners only have a virtual sound device. To also run the core on a Mac with real audio:
 
 1. Use a **dedicated** Mac or VM with nothing personal on it, install [rustup](https://rustup.rs) and the Xcode command line tools, and register a runner (Settings > Actions > Runners > New self-hosted runner > macOS ARM64) as a launchd service under a non-admin user. Prefer an ephemeral runner.
-2. Set Settings > Actions > General > "Require approval for all outside collaborators".
-3. Set the repository variable `SELF_HOSTED_MACOS` to `true` (Settings > Secrets and variables > Actions > Variables).
+2. Put it in a runner group restricted to this repository, with **Workflow access** set to selected workflows: `Justereseau/companion-remote-volume/.github/workflows/ci.yml@refs/heads/main`. This is the real protection: a pull request can edit the workflow, but a run from `refs/pull/N/merge` is not allowed to use the group. Leave "Allow public repositories" on only together with that restriction.
+3. Set Settings > Actions > General > "Require approval for all outside collaborators".
+4. Set the repository variable `SELF_HOSTED_MACOS` to `true` (Settings > Secrets and variables > Actions > Variables).
 
-CI then adds an `Audio core (macos self-hosted)` job running with `RV_INTEGRATION=1`, which briefly changes that Mac's volume and mute and restores them. It is skipped for pull requests from forks, and the variable unset (the default) leaves CI exactly as before.
+CI then adds an `Audio core (macos self-hosted)` job, **on pushes to main only**, running with `RV_INTEGRATION=1`. It briefly changes that Mac's volume and mute and restores them. With the variable unset (the default) CI is unchanged.

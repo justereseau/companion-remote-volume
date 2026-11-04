@@ -110,7 +110,8 @@ jobs:
 
   # The matrix is built at run time so an optional self-hosted Mac (real audio hardware) can be
   # switched on with the repository variable SELF_HOSTED_MACOS=true, without editing this file.
-  # It never runs for pull requests from forks: that would execute their code on our machine.
+  # It only joins pushes to main: a pull request can edit this very file, so the runner group
+  # (WS) is restricted to this workflow at refs/heads/main and never serves pull request runs.
   core-matrix:
     name: Audio core matrix
     runs-on: ubuntu-latest
@@ -120,7 +121,7 @@ jobs:
       - id: build
         env:
           SELF_HOSTED_MACOS: ${{ vars.SELF_HOSTED_MACOS }}
-          TRUSTED: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          TRUSTED: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
           # name is the job name suffix: keep the hosted ones equal to the runner label (required checks).
           # Hosted Windows runners have no audio endpoint (HRESULT 0x80070490): test that path.
