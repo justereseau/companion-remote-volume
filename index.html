@@ -9,6 +9,17 @@
 		/>
 		<title>Remote Volume</title>
 		<style>
+			*,
+			*::before,
+			*::after {
+				box-sizing: border-box;
+			}
+
+			html,
+			body {
+				height: 100%;
+			}
+
 			body {
 				font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 				background-color: #121212;
@@ -17,54 +28,64 @@
 				padding: 0;
 				display: flex;
 				justify-content: center;
-				align-items: center;
-				height: 100vh;
-				overflow: hidden;
+				/* "safe" keeps the top reachable when content is taller than the window. */
+				align-items: safe center;
+				overflow-y: auto;
 			}
 
 			.container {
 				background-color: #1e1e1e;
-				padding: 30px;
-				border-radius: 10px;
-				box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+				padding: 20px 24px;
 				width: 100%;
-				max-width: 400px;
+				min-height: 100%;
 				text-align: center;
 			}
 
 			h1 {
 				color: #bb86fc;
-				margin-bottom: 20px;
+				font-size: 24px;
+				margin: 0 0 8px;
 			}
 
 			label {
 				display: block;
-				margin: 15px 0 5px;
-				font-weight: bold;
+				margin: 12px 0 4px;
+				font-weight: 600;
+				font-size: 14px;
 			}
 
 			input[type='number'],
 			input[type='text'],
-			select,
-			input[type='checkbox'] {
-				margin-top: 5px;
-				padding: 10px;
+			select {
+				padding: 8px 10px;
 				border: none;
 				border-radius: 5px;
 				background-color: #333333;
 				color: #ffffff;
-				width: calc(100% - 20px);
-				font-size: 16px;
+				width: 100%;
+				font-size: 15px;
 				transition: background-color 0.3s ease;
 			}
 
-			input[type='checkbox'] {
-				width: auto;
-				margin-right: 10px;
+			.checks {
+				display: flex;
+				justify-content: center;
+				gap: 24px;
+				margin-top: 14px;
 			}
 
-			select {
-				width: 100%;
+			.checks label {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				margin: 0;
+				cursor: pointer;
+			}
+
+			input[type='checkbox'] {
+				width: 16px;
+				height: 16px;
+				margin: 0;
 			}
 
 			.row {
@@ -72,9 +93,14 @@
 				gap: 8px;
 			}
 
+			.row input {
+				flex: 1;
+				min-width: 0;
+			}
+
 			.row button {
 				width: auto;
-				margin-top: 5px;
+				margin-top: 0;
 				padding: 0 12px;
 				font-size: 14px;
 			}
@@ -83,6 +109,7 @@
 				font-size: 12px;
 				color: #aaa;
 				margin-top: 4px;
+				overflow-wrap: anywhere;
 			}
 
 			input[type='number']:focus,
@@ -103,7 +130,7 @@
 				transition: background-color 0.3s ease, transform 0.2s ease;
 				width: 100%;
 				font-size: 16px;
-				margin-top: 20px;
+				margin-top: 16px;
 			}
 
 			button:hover {
@@ -115,16 +142,14 @@
 				background-color: #444444;
 			}
 
-			footer {
-				margin-top: 20px;
-				font-size: 14px;
-				color: #bbb;
+			#status {
+				min-height: 1.2em;
 			}
 
-			@media (max-width: 600px) {
-				.container {
-					padding: 20px;
-				}
+			footer {
+				margin-top: 8px;
+				font-size: 12px;
+				color: #999;
 			}
 		</style>
 	</head>
@@ -144,20 +169,13 @@
 				<button id="generateToken" type="button">Generate</button>
 			</div>
 			<div class="hint">If set, clients must connect to ws://host:port/?token=&lt;token&gt;</div>
-			<br />
-			<label for="runOnStartup">
-				<input type="checkbox" id="runOnStartup" />
-				Run on Startup
-			</label>
-			<br />
-			<label for="enablePolling">
-				<input type="checkbox" id="enablePolling" />
-				Enable Polling
-			</label>
-			<br />
+			<div class="checks">
+				<label for="runOnStartup"><input type="checkbox" id="runOnStartup" />Run on Startup</label>
+				<label for="enablePolling"><input type="checkbox" id="enablePolling" />Enable Polling</label>
+			</div>
 			<label for="pollingInterval">Polling Interval (ms):</label>
 			<input type="number" id="pollingInterval" value="1000" min="100" max="10000" disabled />
-			<br />
+			<div class="hint">Polling picks up changes made outside the app. Commands are always pushed to all clients.</div>
 			<button id="save">Save</button>
 			<div id="status" class="hint" role="status"></div>
 

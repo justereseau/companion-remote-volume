@@ -2,7 +2,14 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
-import { createWindowsBackend, parseVolumeInfo, resolveHelperPath, HELPER_PATH } from '../impl/windows/index.js'
+import {
+	createWindowsBackend,
+	parseVolumeInfo,
+	resolveHelperPath,
+	volumeArg,
+	HELPER_PATH,
+	HELPER_ZERO_ARG,
+} from '../impl/windows/index.js'
 import { fakeExecFile } from './helpers/fake-exec.js'
 
 const HELPER_SHA256 = '9f0e5f9a6600d28a687460a46828c068e5a00c6e43fc4f6a6453509a72e6ddb4'
@@ -56,6 +63,7 @@ test('backend invokes the helper with the documented arguments', async () => {
 	await b.setVolume(50.6)
 	await b.setVolume(500)
 	await b.setVolume('7 & calc.exe')
+	await b.setVolume(1)
 	await b.setMuted(true)
 	await b.setMuted(false)
 
@@ -63,8 +71,22 @@ test('backend invokes the helper with the documented arguments', async () => {
 	assert.ok(exec.calls.every((c) => c.options.windowsHide === true && c.options.timeout > 0))
 	assert.deepEqual(
 		exec.calls.map((c) => c.args),
-		[[], [], ['42'], ['51'], ['100'], ['0'], ['mute'], ['unmute']],
+		[[], [], ['42'], ['51'], ['100'], [HELPER_ZERO_ARG], ['1'], ['mute'], ['unmute']],
 	)
+})
+
+test('volume 0 is sent in a form the helper does not ignore', async () => {
+	// Regression: the helper silently ignores "0", so decreasing to 0 never reached 0.
+	assert.equal(HELPER_ZERO_ARG, '1e-9')
+	for (const zero of [0, -0, 0.3, -10, '0']) assert.equal(volumeArg(zero), HELPER_ZERO_ARG, String(zero))
+	assert.notEqual(Number(HELPER_ZERO_ARG), 0)
+	assert.ok(Number(HELPER_ZERO_ARG) < 0.5, 'still rounds to 0 % when read back')
+	assert.equal(volumeArg(0.6), '1')
+	assert.equal(volumeArg(100), '100')
+
+	const exec = fakeExecFile(() => '')
+	await createWindowsBackend({ execFile: exec, helperPath: 'helper.exe' }).setVolume(0)
+	assert.deepEqual(exec.calls[0].args, ['1e-9'])
 })
 
 test('backend surfaces helper failures', async () => {

@@ -60,8 +60,10 @@ if (!gotLock) {
 
 	function createWindow() {
 		mainWindow = new BrowserWindow({
+			// Size of the page itself, excluding the title bar, so the layout fits on every DPI.
+			useContentSize: true,
 			width: 400,
-			height: 640,
+			height: 600,
 			resizable: false,
 			webPreferences: {
 				contextIsolation: true,
@@ -140,7 +142,7 @@ if (!gotLock) {
 			event.reply('config-saved', 'Configuration saved successfully!')
 
 			if (previous.runOnStartup !== config.runOnStartup) await setAutoLaunch(config.runOnStartup)
-			await startServer(server.restart)
+			await startServer(() => server.applyConfig(previous))
 		})
 	})
 

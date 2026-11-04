@@ -321,6 +321,84 @@ test('restart applies a new port and disconnects old clients', async () => {
 	again.ws.close()
 })
 
+/** Simulate a settings save: mutate config, then apply it against a snapshot of the old one. */
+async function save(mutate) {
+	const previous = structuredClone(config)
+	mutate(config)
+	return server.applyConfig(previous)
+}
+const closedWith = (c) => new Promise((r) => c.ws.on('close', (code, reason) => r({ code, reason: reason.toString() })))
+
+test('saving unrelated or unchanged settings keeps the server and clients untouched', async () => {
+	const c = await connect()
+	await c.next(1)
+	let closed = false
+	c.ws.on('close', () => (closed = true))
+
+	assert.deepEqual(await save(() => {}), { restarted: false, disconnected: 0, pollingRestarted: false })
+	assert.deepEqual(await save((cfg) => (cfg.runOnStartup = true)), { restarted: false, disconnected: 0, pollingRestarted: false })
+	await sleep(50)
+	assert.equal(closed, false)
+	send(c, { action: 'isMuted' })
+	assert.deepEqual(await c.next(2), { muted: false })
+	c.ws.close()
+})
+
+test('changing polling only restarts the timer', async () => {
+	const c = await connect()
+	await c.next(1)
+	const result = await save((cfg) => (cfg.polling = { enabled: true, interval: 50 }))
+	assert.deepEqual(result, { restarted: false, disconnected: 0, pollingRestarted: true })
+	controller.state.volume = 77
+	assert.deepEqual(await c.until(eq({ volume: 77 })), { volume: 77 }, 'same connection receives polled changes')
+	c.ws.close()
+})
+
+test('setting a token disconnects only clients without it', async () => {
+	const plain = await connect()
+	await plain.next(1)
+	const closing = closedWith(plain)
+	const result = await save((cfg) => (cfg.websocket.token = 'new-secret'))
+	assert.deepEqual(result, { restarted: false, disconnected: 1, pollingRestarted: false })
+	assert.deepEqual(await closing, { code: 1008, reason: 'Access settings changed' })
+	assert.equal((await connect()).status, 401)
+	const authed = await connect('/?token=new-secret')
+	await authed.next(1)
+
+	// Changing an unrelated access rule keeps clients that still pass.
+	let authedClosed = false
+	authed.ws.on('close', () => (authedClosed = true))
+	assert.equal((await save((cfg) => (cfg.websocket.allowedOrigins = ['http://localhost:9000']))).disconnected, 0)
+	// Removing the token keeps everyone.
+	assert.equal((await save((cfg) => (cfg.websocket.token = ''))).disconnected, 0)
+	await sleep(50)
+	assert.equal(authedClosed, false)
+	authed.ws.close()
+})
+
+test('removing an allowed origin disconnects that browser client only', async () => {
+	config.websocket.allowedOrigins = ['http://localhost:8080']
+	const browser = await connect('', { origin: 'http://localhost:8080' })
+	const native = await connect()
+	await browser.next(1)
+	await native.next(1)
+	const closing = closedWith(browser)
+	assert.equal((await save((cfg) => (cfg.websocket.allowedOrigins = []))).disconnected, 1)
+	assert.equal((await closing).code, 1008)
+	send(native, { action: 'isMuted' })
+	assert.deepEqual(await native.until(eq({ muted: false }), { from: 1 }), { muted: false })
+	native.ws.close()
+})
+
+test('changing the port or bind address restarts the listener', async () => {
+	const c = await connect()
+	await c.next(1)
+	const closing = new Promise((r) => c.ws.on('close', r))
+	const result = await save((cfg) => (cfg.websocket.host = '0.0.0.0'))
+	assert.equal(result.restarted, true)
+	await closing
+})
+
 test('binding to 127.0.0.1 is honoured', async () => {
 	await server.stop()
 	config.websocket.host = '127.0.0.1'

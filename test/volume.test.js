@@ -75,6 +75,19 @@ test('increase/decrease clamp to 0..100', async () => {
 	assert.equal(backend.state.volume, 0)
 })
 
+test('decreasing to exactly 0 reaches the backend as 0', async () => {
+	for (const [start, step] of [
+		[2, 2],
+		[1, 1],
+		[5, 10],
+	]) {
+		const backend = fakeBackend({ volume: start, muted: false })
+		const c = createVolumeController({ backend, audio: audio() })
+		await c.decreaseVolume(step)
+		assert.deepEqual(backend.calls, [['setVolume', 0]], `${start} - ${step}`)
+	}
+})
+
 test('setVolume coerces before reaching the backend', async () => {
 	const backend = fakeBackend()
 	const c = createVolumeController({ backend, audio: audio() })
