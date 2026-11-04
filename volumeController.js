@@ -1,78 +1,20 @@
+// Wires the OS-specific backend and naudiodon into the volume controller used by the app.
 import os from 'node:os'
 import { getDevices, getHostAPIs } from '@capaj/naudiodon'
-let impl = null
+import { backendModuleFor, createVolumeController } from './lib/volume.js'
 
-switch (os.type()) {
-	case 'Darwin':
-		impl = await import('./impl/darwin.js')
-		break
-	case 'Linux':
-		impl = await import('./impl/linux.js')
-		break
-	case 'Windows_NT':
-		impl = await import('./impl/windows/index.js')
-		break
-	default:
-		throw new Error('Your OS is currently not supported by node-loudness.')
-}
+const backend = await import(new URL(backendModuleFor(os.type()), new URL('./lib/', import.meta.url)).href)
 
-// naudiodon enumerates devices with synchronous PortAudio calls that block the Electron main
-// thread for tens of milliseconds. Cache the result briefly so bursts of getState requests
-// (or polling plus client requests) cost at most one enumeration per second.
-const DEVICE_CACHE_MS = 1000
-let deviceCache = { at: -Infinity, name: null }
+export const controller = createVolumeController({ backend, audio: { getDevices, getHostAPIs } })
 
-function readDefaultOutputName() {
-	const hostAPIs = getHostAPIs()
-	const defaultOutput = hostAPIs?.HostAPIs?.[hostAPIs.defaultHostAPI]?.defaultOutput
-	// PortAudio reports -1 when there is no output device (e.g. headset unplugged).
-	if (!Number.isInteger(defaultOutput) || defaultOutput < 0) return null
-
-	const device = getDevices().find((d) => d.id === defaultOutput)
-	return device?.name ?? null
-}
-
-export async function getAudioDevice() {
-	const now = Date.now()
-	if (now - deviceCache.at >= DEVICE_CACHE_MS) {
-		deviceCache = { at: now, name: readDefaultOutputName() }
-	}
-	return deviceCache.name
-}
-
-const clampVolume = (value) => Math.min(Math.max(Math.round(Number(value)), 0), 100)
-
-export async function setVolume(value) {
-	return impl.setVolume(clampVolume(value))
-}
-
-export async function getVolume() {
-	return impl.getVolume()
-}
-
-export async function mute() {
-	return impl.setMuted(true)
-}
-
-export async function unmute() {
-	return impl.setMuted(false)
-}
-
-export async function toggleMute() {
-	const currentlyMuted = await impl.getMuted()
-	return impl.setMuted(!currentlyMuted)
-}
-
-export async function isMuted() {
-	return impl.getMuted()
-}
-
-export async function increaseVolume(amount) {
-	const currentVolume = await impl.getVolume()
-	return impl.setVolume(clampVolume(currentVolume + amount))
-}
-
-export async function decreaseVolume(amount) {
-	const currentVolume = await impl.getVolume()
-	return impl.setVolume(clampVolume(currentVolume - amount))
-}
+export const {
+	getAudioDevice,
+	setVolume,
+	getVolume,
+	mute,
+	unmute,
+	toggleMute,
+	isMuted,
+	increaseVolume,
+	decreaseVolume,
+} = controller

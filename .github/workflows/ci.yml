@@ -16,8 +16,12 @@ concurrency:
 
 jobs:
   test:
-    name: Test & audit
-    runs-on: ubuntu-latest
+    name: Unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,11 +34,69 @@ jobs:
 
       # Install scripts (native builds) are not needed for unit tests.
       - run: npm ci --ignore-scripts
-      - run: npm test
+      - name: Unit tests with coverage thresholds
+        run: npm run test:coverage
+
+  audit:
+    name: Audit dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --ignore-scripts
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
       - name: Verify registry signatures
         run: npm audit signatures
+
+  integration:
+    name: Real audio backend (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --ignore-scripts
+
+      # Runners have no sound card: give Linux a virtual one (PulseAudio null sink behind ALSA).
+      - name: Virtual sound card (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends pulseaudio pulseaudio-utils alsa-utils libasound2-plugins
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_sink
+          pactl set-default-sink ci_sink
+          amixer
+
+      - name: Audio devices (diagnostics)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            osascript -e 'get volume settings' || true
+          else
+            powershell -NoProfile -Command "Get-Service Audiosrv | Format-List Name,Status; Get-CimInstance Win32_SoundDevice | Format-Table Name,Status" || true
+            ./impl/windows/adjust_get_current_system_volume_vista_plus.exe || true
+          fi
+
+      - name: Integration tests against the OS audio stack
+        env:
+          RV_INTEGRATION: '1'
+        run: npm run test:integration
 
   dependency-review:
     name: Dependency review
@@ -50,7 +112,7 @@ jobs:
 
   build:
     name: Build (${{ matrix.os }})
-    needs: test
+    needs: [test, audit]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

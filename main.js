@@ -1,23 +1,12 @@
 import { app, BrowserWindow, Tray, Menu, ipcMain, session } from 'electron'
-import { WebSocketServer } from 'ws'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import Store from 'electron-store'
 import AutoLaunch from 'electron-auto-launch'
 import log from 'electron-log/main'
 import { sanitizeConfig } from './lib/config.js'
-import { parseMessage, admitClient, RateLimiter, MAX_PAYLOAD_BYTES } from './lib/protocol.js'
-import {
-	setVolume,
-	getVolume,
-	mute,
-	unmute,
-	toggleMute,
-	isMuted,
-	increaseVolume,
-	decreaseVolume,
-	getAudioDevice,
-} from './volumeController.js'
+import { createVolumeServer } from './lib/server.js'
+import { controller } from './volumeController.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const INDEX_HTML = path.join(__dirname, 'index.html')
@@ -36,7 +25,6 @@ if (!gotLock) {
 	log.info('Another instance of the app is already running. Exiting.')
 	app.quit()
 } else {
-	let wss
 	let mainWindow
 	let tray
 	let isQuitting = false
@@ -44,6 +32,9 @@ if (!gotLock) {
 
 	let config = sanitizeConfig(store.get('settings'))
 	store.set('settings', config)
+
+	const server = createVolumeServer({ getConfig: () => config, controller, log })
+	const startServer = (fn) => fn().catch((error) => log.error('Failed to start WebSocket server:', error))
 
 	const setAutoLaunch = async (enabled) => {
 		log.info(`Auto-start setting changed. Attempting to ${enabled ? 'enable' : 'disable'} auto-launch.`)
@@ -133,7 +124,7 @@ if (!gotLock) {
 		tray.on('click', showWindow)
 
 		await setAutoLaunch(config.runOnStartup)
-		startWebSocketServer()
+		await startServer(server.start)
 
 		ipcMain.on('save-config', async (event, newConfig) => {
 			// Only accept configuration from our own settings page.
@@ -149,147 +140,13 @@ if (!gotLock) {
 			event.reply('config-saved', 'Configuration saved successfully!')
 
 			if (previous.runOnStartup !== config.runOnStartup) await setAutoLaunch(config.runOnStartup)
-			restartWebSocketServer()
+			await startServer(server.restart)
 		})
 	})
 
-	let lastVolume = null
-	let lastMuteState = null
-	let lastAudioDevice = null
-	let pollingInterval = null
-	let pollInFlight = false
-
-	async function readState() {
-		const [volume, muted, outputDevice] = await Promise.all([getVolume(), isMuted(), getAudioDevice()])
-		return { volume, muted, outputDevice }
-	}
-
-	function startMonitoring() {
-		if (pollingInterval) clearInterval(pollingInterval)
-		pollingInterval = null
-		if (!config.polling.enabled) return
-
-		log.info(`Starting volume/mute state monitoring every ${config.polling.interval} ms.`)
-		pollingInterval = setInterval(async () => {
-			// Skip a tick instead of piling up child processes when the OS is slow.
-			if (pollInFlight) return
-			pollInFlight = true
-			try {
-				const { volume, muted, outputDevice } = await readState()
-				if (volume !== lastVolume) {
-					lastVolume = volume
-					broadcastState({ volume })
-				}
-				if (muted !== lastMuteState) {
-					lastMuteState = muted
-					broadcastState({ muted })
-				}
-				if (outputDevice !== lastAudioDevice) {
-					lastAudioDevice = outputDevice
-					broadcastState({ outputDevice })
-				}
-			} catch (error) {
-				log.error('Error monitoring volume/mute state:', error)
-			} finally {
-				pollInFlight = false
-			}
-		}, config.polling.interval)
-	}
-
-	function broadcastState(state) {
-		if (!wss) return
-		const payload = JSON.stringify(state)
-		for (const client of wss.clients) {
-			if (client.readyState === client.OPEN) client.send(payload)
-		}
-	}
-
-	const commands = {
-		setVolume: (value) => setVolume(value),
-		increaseVolume: (value) => increaseVolume(value),
-		decreaseVolume: (value) => decreaseVolume(value),
-		mute: () => mute(),
-		unmute: () => unmute(),
-		toggleMute: () => toggleMute(),
-		getState: () => readState(),
-		isMuted: async () => ({ muted: await isMuted() }),
-	}
-
-	function restartWebSocketServer() {
-		if (!wss) return startWebSocketServer()
-		log.info('Closing existing WebSocket server to apply new configuration.')
-		const old = wss
-		wss = null
-		for (const client of old.clients) client.terminate()
-		old.close(() => {
-			log.info('WebSocket server closed. Restarting...')
-			startWebSocketServer()
-		})
-	}
-
-	function startWebSocketServer() {
-		const { port, host } = config.websocket
-
-		const server = new WebSocketServer({
-			port,
-			host,
-			maxPayload: MAX_PAYLOAD_BYTES,
-			perMessageDeflate: false,
-			verifyClient: ({ req }, done) => {
-				const verdict = admitClient(req, config.websocket, server.clients.size)
-				if (verdict.ok) return done(true)
-				log.warn(`Rejected WebSocket client ${req.socket.remoteAddress}: ${verdict.reason}`)
-				done(false, verdict.code, verdict.reason)
-			},
-		})
-		wss = server
-
-		server.on('listening', () => {
-			log.info(`WebSocket server listening on ws://${host}:${port}${config.websocket.token ? ' (token required)' : ''}`)
-		})
-
-		server.on('error', (error) => {
-			log.error('WebSocket server error:', error)
-		})
-
-		server.on('connection', async (ws, req) => {
-			log.info(`Client connected from ${req.socket.remoteAddress}`)
-			const limiter = new RateLimiter()
-
-			ws.on('error', (error) => log.warn('WebSocket client error:', error.message))
-
-			ws.on('message', async (raw, isBinary) => {
-				if (isBinary) return
-				if (!limiter.tryRemove()) {
-					ws.send(JSON.stringify({ error: 'Rate limit exceeded' }))
-					return
-				}
-
-				const msg = parseMessage(raw)
-				if (!msg.ok) {
-					log.warn(`Rejected client message: ${msg.error}`)
-					ws.send(JSON.stringify(msg.action ? { action: msg.action, response: { error: msg.error } } : { error: msg.error }))
-					return
-				}
-
-				try {
-					const response = await commands[msg.action](msg.value)
-					if (msg.action === 'getState' || msg.action === 'isMuted') ws.send(JSON.stringify(response))
-				} catch (error) {
-					log.error(`Error executing ${msg.action}:`, error)
-					ws.send(JSON.stringify({ action: msg.action, response: { error: 'Failed to execute action' } }))
-				}
-			})
-
-			try {
-				ws.send(JSON.stringify(await readState()))
-			} catch (error) {
-				log.error('Failed to send initial state:', error)
-			}
-		})
-
-		startMonitoring()
-	}
+	app.on('will-quit', () => {
+		server.stop()
+	})
 
 	app.on('window-all-closed', () => {
 		// Keep running in the tray; quitting happens through the tray menu.

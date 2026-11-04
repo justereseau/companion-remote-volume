@@ -11,7 +11,9 @@
 	},
 	"scripts": {
 		"start": "electron .",
-		"test": "node --test",
+		"test": "node --test \"test/*.test.js\"",
+		"test:coverage": "node --test --experimental-test-coverage --test-coverage-include=lib/** --test-coverage-include=impl/** --test-coverage-lines=90 --test-coverage-branches=80 --test-coverage-functions=90 \"test/*.test.js\"",
+		"test:integration": "node --test \"test/integration/*.test.js\"",
 		"build": "electron-builder --publish never",
 		"build:win": "electron-builder --win --publish never"
 	},
