@@ -46,10 +46,15 @@
 			"groupName": "github actions"
 		},
 		{
-			"description": "Node in CI must match the Node bundled with Electron – no automatic major bumps",
-			"matchManagers": ["nvm"],
+			"description": "Node in CI (.nvmrc) and engines must match the Node bundled with Electron – no automatic major bumps",
+			"matchPackageNames": ["node"],
 			"matchUpdateTypes": ["major"],
 			"enabled": false
+		},
+		{
+			"description": "engines.node is a minimum, not a pin – only change it when a new version falls outside the range",
+			"matchDepTypes": ["engines"],
+			"rangeStrategy": "replace"
 		}
 	]
 }
