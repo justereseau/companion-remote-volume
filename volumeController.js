@@ -16,7 +16,13 @@ switch (os.type()) {
 		throw new Error('Your OS is currently not supported by node-loudness.')
 }
 
-export async function getAudioDevice() {
+// naudiodon enumerates devices with synchronous PortAudio calls that block the Electron main
+// thread for tens of milliseconds. Cache the result briefly so bursts of getState requests
+// (or polling plus client requests) cost at most one enumeration per second.
+const DEVICE_CACHE_MS = 1000
+let deviceCache = { at: -Infinity, name: null }
+
+function readDefaultOutputName() {
 	const hostAPIs = getHostAPIs()
 	const defaultOutput = hostAPIs?.HostAPIs?.[hostAPIs.defaultHostAPI]?.defaultOutput
 	// PortAudio reports -1 when there is no output device (e.g. headset unplugged).
@@ -24,6 +30,14 @@ export async function getAudioDevice() {
 
 	const device = getDevices().find((d) => d.id === defaultOutput)
 	return device?.name ?? null
+}
+
+export async function getAudioDevice() {
+	const now = Date.now()
+	if (now - deviceCache.at >= DEVICE_CACHE_MS) {
+		deviceCache = { at: now, name: readDefaultOutputName() }
+	}
+	return deviceCache.name
 }
 
 const clampVolume = (value) => Math.min(Math.max(Math.round(Number(value)), 0), 100)
