@@ -36,6 +36,16 @@ test('parseVolumeInfo rejects unexpected output', () => {
 	}
 })
 
+test('parseVolumeInfo explains helper COM errors', () => {
+	// Real output from a GitHub-hosted Windows runner (no audio endpoint): -0x80070490 as signed int.
+	assert.throws(() => parseVolumeInfo('error 2147023728 occurred\r\n'), /HRESULT 0x80070490 \(no default audio output device\)/)
+	assert.throws(() => parseVolumeInfo('error -2147023728 occurred'), /HRESULT 0x80070490/)
+	// E_FAIL (0x80004005) in both encodings, no known description.
+	for (const out of ['error 2147467259 occurred', 'error 2147500037 occurred']) {
+		assert.throws(() => parseVolumeInfo(out), (e) => /HRESULT 0x80004005$/.test(e.message), out)
+	}
+})
+
 test('backend invokes the helper with the documented arguments', async () => {
 	const exec = fakeExecFile(() => '37 1')
 	const b = createWindowsBackend({ execFile: exec, helperPath: 'helper.exe' })

@@ -80,6 +80,8 @@ jobs:
           pulseaudio --start --exit-idle-time=-1
           pactl load-module module-null-sink sink_name=ci_sink
           pactl set-default-sink ci_sink
+          # Route ALSA's default device through PulseAudio (there is no hardware card 0).
+          printf 'pcm.!default { type pulse }\nctl.!default { type pulse }\n' > ~/.asoundrc
           amixer
 
       - name: Audio devices (diagnostics)
@@ -93,9 +95,11 @@ jobs:
             ./impl/windows/adjust_get_current_system_volume_vista_plus.exe || true
           fi
 
+      # Hosted Windows runners have no audio endpoint (helper reports 0x80070490). There we verify
+      # that the bundled helper executes and that the missing device is reported clearly.
       - name: Integration tests against the OS audio stack
         env:
-          RV_INTEGRATION: '1'
+          RV_INTEGRATION: ${{ runner.os == 'Windows' && 'no-device' || '1' }}
         run: npm run test:integration
 
   dependency-review:

@@ -18,9 +18,22 @@ export function resolveHelperPath(path) {
 // Usage: no args -> prints "<volume> <muted 0|1>"; "<0-100>" sets volume; "mute" / "unmute".
 export const HELPER_PATH = resolveHelperPath(join(__dirname, 'adjust_get_current_system_volume_vista_plus.exe'))
 
+const KNOWN_HRESULTS = Object.freeze({
+	0x80070490: 'no default audio output device',
+})
+
 /** Parse the helper's "<volume> <muted>" output. */
 export function parseVolumeInfo(stdout) {
 	const data = String(stdout).trim()
+	// On COM failures the helper prints "error <n> occurred" where n is the magnitude of the
+	// (negative, signed 32-bit) HRESULT, e.g. 2147023728 for 0x80070490.
+	const failure = /^error (-?\d+) occurred$/.exec(data)
+	if (failure) {
+		const n = Math.abs(Number(failure[1]))
+		const code = n >= 0x80000000 ? n : (0x100000000 - n) >>> 0
+		const hex = `0x${code.toString(16).toUpperCase().padStart(8, '0')}`
+		throw new Error(`Volume helper failed with HRESULT ${hex}${KNOWN_HRESULTS[code] ? ` (${KNOWN_HRESULTS[code]})` : ''}`)
+	}
 	const match = /^(\d{1,3})\s+([01])$/.exec(data)
 	if (!match || Number(match[1]) > 100) {
 		throw new Error(`Unexpected output from volume helper: ${JSON.stringify(data.slice(0, 64))}`)
