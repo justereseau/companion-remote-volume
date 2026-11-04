@@ -39,3 +39,13 @@ Try the binary by hand:
 ```sh
 echo '{"id":1,"action":"listOutputDevices"}' | cargo run -q
 ```
+
+## Optional: self-hosted Mac in CI
+
+Hosted macOS runners only have a virtual sound device. To also run the core on a Mac with real audio:
+
+1. Use a **dedicated** Mac or VM with nothing personal on it, install [rustup](https://rustup.rs) and the Xcode command line tools, and register a runner (Settings > Actions > Runners > New self-hosted runner > macOS ARM64) as a launchd service under a non-admin user. Prefer an ephemeral runner.
+2. Set Settings > Actions > General > "Require approval for all outside collaborators".
+3. Set the repository variable `SELF_HOSTED_MACOS` to `true` (Settings > Secrets and variables > Actions > Variables).
+
+CI then adds an `Audio core (macos self-hosted)` job running with `RV_INTEGRATION=1`, which briefly changes that Mac's volume and mute and restores them. It is skipped for pull requests from forks, and the variable unset (the default) leaves CI exactly as before.

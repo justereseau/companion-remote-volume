@@ -108,21 +108,43 @@ jobs:
           RV_INTEGRATION: ${{ runner.os == 'Windows' && 'no-device' || '1' }}
         run: npm run test:integration
 
+  # The matrix is built at run time so an optional self-hosted Mac (real audio hardware) can be
+  # switched on with the repository variable SELF_HOSTED_MACOS=true, without editing this file.
+  # It never runs for pull requests from forks: that would execute their code on our machine.
+  core-matrix:
+    name: Audio core matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - id: build
+        env:
+          SELF_HOSTED_MACOS: ${{ vars.SELF_HOSTED_MACOS }}
+          TRUSTED: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          # name is the job name suffix: keep the hosted ones equal to the runner label (required checks).
+          # Hosted Windows runners have no audio endpoint (HRESULT 0x80070490): test that path.
+          matrix='[
+            {"name":"ubuntu-latest","runner":"ubuntu-latest","integration":"1"},
+            {"name":"windows-latest","runner":"windows-latest","integration":"no-device"},
+            {"name":"macos-latest","runner":"macos-latest","integration":"1"}
+          ]'
+          if [ "$SELF_HOSTED_MACOS" = "true" ] && [ "$TRUSTED" = "true" ]; then
+            matrix=$(jq -c '. + [{"name":"macos self-hosted","runner":["self-hosted","macOS","ARM64"],"integration":"1"}]' <<<"$matrix")
+          else
+            matrix=$(jq -c . <<<"$matrix")
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   core:
-    name: Audio core (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Audio core (${{ matrix.name }})
+    needs: core-matrix
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            integration: '1'
-          # Hosted Windows runners have no audio endpoint (HRESULT 0x80070490): test that path.
-          - os: windows-latest
-            integration: no-device
-          - os: macos-latest
-            integration: '1'
+        include: ${{ fromJSON(needs.core-matrix.outputs.matrix) }}
     defaults:
       run:
         working-directory: core
@@ -141,6 +163,12 @@ jobs:
           pactl load-module module-null-sink sink_name=ci_sink
           pactl set-default-sink ci_sink
           pactl list short sinks
+
+      # Self-hosted runners run as a service with a minimal PATH; rustup must be installed there.
+      - name: Add cargo to PATH (self-hosted)
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       # Hosted runners ship rustup; core/rust-toolchain.toml selects the channel.
       - name: Rust toolchain
