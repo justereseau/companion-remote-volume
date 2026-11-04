@@ -4,16 +4,16 @@
 
 use std::ffi::c_void;
 
-use windows::core::{Error as WinError, BOOL};
+use windows::core::Error as WinError;
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
     eConsole, eRender, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
+use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
 };
-use windows::Win32::UI::Shell::PropertiesSystem::PropVariantToStringAlloc;
 
 use super::{AudioError, AudioResult, Backend, Capabilities, Device, ErrorCode};
 use crate::volume::{percent_to_scalar, scalar_to_percent};
@@ -126,7 +126,7 @@ impl Backend for Wasapi {
 
     fn set_muted(&mut self, muted: bool) -> AudioResult<bool> {
         let endpoint = default_endpoint()?;
-        unsafe { endpoint.SetMute(BOOL::from(muted), std::ptr::null()) }.map_err(map_err)?;
+        unsafe { endpoint.SetMute(muted, std::ptr::null()) }.map_err(map_err)?;
         let now = unsafe { endpoint.GetMute() }.map_err(map_err)?;
         Ok(now.as_bool())
     }
