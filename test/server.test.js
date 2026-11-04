@@ -8,6 +8,7 @@ import { RateLimiter } from '../lib/protocol.js'
 function fakeController() {
 	const state = { volume: 40, muted: false, outputDevice: 'Speakers' }
 	const calls = []
+	const counters = { reads: 0 }
 	const record =
 		(name, fn) =>
 		async (...args) => {
@@ -17,8 +18,8 @@ function fakeController() {
 	return {
 		state,
 		calls,
-		fail: null,
-		getVolume: async () => state.volume,
+		counters,
+		getVolume: async () => (counters.reads++, state.volume),
 		isMuted: async () => state.muted,
 		getAudioDevice: async () => state.outputDevice,
 		setVolume: record('setVolume', (v) => (state.volume = v)),
@@ -32,15 +33,20 @@ function fakeController() {
 
 let config, controller, server, url
 
+async function startServer(overrides = {}) {
+	server = createVolumeServer({ getConfig: () => config, controller, ...overrides })
+	const addr = await server.start()
+	url = `ws://127.0.0.1:${addr.port}`
+	return addr
+}
+
 beforeEach(async () => {
 	config = {
 		websocket: { port: 0, host: '127.0.0.1', token: '', allowedOrigins: [] },
 		polling: { enabled: false, interval: 1000 },
 	}
 	controller = fakeController()
-	server = createVolumeServer({ getConfig: () => config, controller })
-	const addr = await server.start()
-	url = `ws://127.0.0.1:${addr.port}`
+	await startServer()
 })
 
 afterEach(() => server.stop())
@@ -55,20 +61,33 @@ function connect(path = '', options = {}) {
 			messages.push(JSON.parse(m.toString()))
 			waiters.splice(0).forEach((w) => w())
 		})
-		const next = (count = messages.length + 1, timeout = 2000) =>
+		/** Resolve with the first message (from index `from`) matching `pred`. */
+		const until = (pred, { from = 0, timeout = 2000 } = {}) =>
 			new Promise((res, rej) => {
-				const check = () => (messages.length >= count ? res(messages[count - 1]) : waiters.push(check))
-				setTimeout(() => rej(new Error(`timeout waiting for message #${count}; got ${JSON.stringify(messages)}`)), timeout).unref()
+				const timer = setTimeout(
+					() => rej(new Error(`timeout waiting for message; got ${JSON.stringify(messages)}`)),
+					timeout,
+				)
+				const check = () => {
+					const hit = messages.slice(from).find(pred)
+					if (hit !== undefined) {
+						clearTimeout(timer)
+						res(hit)
+					} else waiters.push(check)
+				}
 				check()
 			})
-		ws.on('open', () => resolve({ ws, messages, next, status: 101 }))
+		const next = (count = messages.length + 1, timeout) => until((_m) => messages.length >= count, { timeout }).then(() => messages[count - 1])
+		ws.on('open', () => resolve({ ws, messages, next, until, status: 101 }))
 		ws.on('unexpected-response', (_req, res) => resolve({ status: res.statusCode }))
 		ws.on('error', () => {})
 	})
 }
 
 const send = (c, obj) => c.ws.send(typeof obj === 'string' ? obj : JSON.stringify(obj))
-const settle = () => new Promise((r) => setTimeout(r, 50))
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const isFullState = (m) => 'volume' in m && 'muted' in m && 'outputDevice' in m
+const eq = (expected) => (m) => JSON.stringify(m) === JSON.stringify(expected)
 
 test('pushes the current state on connect', async () => {
 	const c = await connect()
@@ -88,15 +107,87 @@ test('executes every documented action', async () => {
 		{ action: 'toggleMute' },
 	])
 		send(c, msg)
+	await sleep(100)
 	send(c, { action: 'getState' })
-	assert.deepEqual(await c.next(2), { volume: 65, muted: true, outputDevice: 'Speakers' })
+	assert.deepEqual(await c.until(isFullState, { from: 1 }), { volume: 65, muted: true, outputDevice: 'Speakers' })
+	const before = c.messages.length
 	send(c, { action: 'isMuted' })
-	assert.deepEqual(await c.next(3), { muted: true })
+	assert.deepEqual(await c.next(before + 1), { muted: true })
 	assert.deepEqual(
 		controller.calls.map((x) => x[0]),
 		['setVolume', 'increaseVolume', 'decreaseVolume', 'mute', 'unmute', 'toggleMute'],
 	)
 	c.ws.close()
+})
+
+test('commands push the new state to every client even with polling disabled', async () => {
+	assert.equal(config.polling.enabled, false)
+	const a = await connect()
+	const b = await connect()
+	await a.next(1)
+	await b.next(1)
+
+	send(a, { action: 'setVolume', value: 70 })
+	assert.deepEqual(await a.until(eq({ volume: 70 })), { volume: 70 })
+	assert.deepEqual(await b.until(eq({ volume: 70 })), { volume: 70 })
+
+	send(b, { action: 'toggleMute' })
+	await a.until(eq({ muted: true }))
+	await b.until(eq({ muted: true }))
+
+	send(a, { action: 'decreaseVolume', value: 20 })
+	await b.until(eq({ volume: 50 }))
+	a.ws.close()
+	b.ws.close()
+})
+
+test('only changed fields are pushed after a command', async () => {
+	const c = await connect()
+	await c.next(1)
+	send(c, { action: 'setVolume', value: 40 }) // same as current: nothing to push
+	send(c, { action: 'mute' })
+	await c.until(eq({ muted: true }))
+	await sleep(50)
+	assert.deepEqual(c.messages.slice(1), [{ muted: true }])
+	c.ws.close()
+})
+
+test('a burst of commands is coalesced and ends with the final value', async () => {
+	const c = await connect()
+	await c.next(1)
+	const readsBefore = controller.counters.reads
+	for (let v = 1; v <= 15; v++) send(c, { action: 'setVolume', value: v })
+	await c.until(eq({ volume: 15 }))
+	await sleep(50)
+	const reads = controller.counters.reads - readsBefore
+	assert.ok(reads < 15, `expected coalesced refreshes, got ${reads} state reads for 15 commands`)
+	assert.deepEqual(c.messages.at(-1), { volume: 15 })
+	c.ws.close()
+})
+
+test('failed commands do not push state', async () => {
+	controller.mute = async () => {
+		throw new Error('helper crashed')
+	}
+	const c = await connect()
+	await c.next(1)
+	send(c, { action: 'mute' })
+	assert.deepEqual(await c.next(2), { action: 'mute', response: { error: 'Failed to execute action' } })
+	send(c, { action: 'isMuted' })
+	assert.deepEqual(await c.next(3), { muted: false })
+	c.ws.close()
+})
+
+test('a new client brings others up to date with external changes', async () => {
+	const a = await connect()
+	await a.next(1)
+	controller.state.volume = 5 // changed outside the app, polling disabled
+	const b = await connect()
+	assert.deepEqual(await b.next(1), { volume: 5, muted: false, outputDevice: 'Speakers' })
+	assert.deepEqual(await a.until(eq({ volume: 5 })), { volume: 5 })
+	assert.equal(b.messages.length, 1, 'newcomer gets the full state once, not the diff too')
+	a.ws.close()
+	b.ws.close()
 })
 
 test('invalid messages get an error reply and never reach the backend', async () => {
@@ -121,31 +212,19 @@ test('binary frames are ignored', async () => {
 	const c = await connect()
 	await c.next(1)
 	c.ws.send(Buffer.from(JSON.stringify({ action: 'mute' })), { binary: true })
-	await settle()
+	await sleep(50)
 	assert.deepEqual(controller.calls, [])
 	assert.equal(c.messages.length, 1)
 	c.ws.close()
 })
 
-test('backend errors are reported without killing the connection', async () => {
-	controller.mute = async () => {
-		throw new Error('helper crashed')
-	}
-	const c = await connect()
-	await c.next(1)
-	send(c, { action: 'mute' })
-	assert.deepEqual(await c.next(2), { action: 'mute', response: { error: 'Failed to execute action' } })
-	send(c, { action: 'isMuted' })
-	assert.deepEqual(await c.next(3), { muted: false })
-	c.ws.close()
-})
-
-test('a failing initial state read does not crash the server', async () => {
+test('a failing state read does not crash the server', async () => {
 	controller.getVolume = async () => {
 		throw new Error('no device')
 	}
 	const c = await connect()
-	await settle()
+	send(c, { action: 'mute' }) // triggers a refresh that fails
+	await sleep(50)
 	assert.equal(c.messages.length, 0)
 	assert.equal(c.ws.readyState, WebSocket.OPEN)
 	c.ws.close()
@@ -181,56 +260,52 @@ test('token is enforced when configured', async () => {
 
 test('rate limit rejects bursts beyond the bucket', async () => {
 	await server.stop()
-	server = createVolumeServer({
-		getConfig: () => config,
-		controller,
-		createRateLimiter: () => new RateLimiter({ capacity: 5, refillPerSecond: 0.001 }),
-	})
-	url = `ws://127.0.0.1:${(await server.start()).port}`
+	await startServer({ createRateLimiter: () => new RateLimiter({ capacity: 5, refillPerSecond: 0.001 }) })
 	const c = await connect()
 	await c.next(1)
 	for (let i = 0; i < 8; i++) send(c, { action: 'isMuted' })
 	await c.next(9)
-	const errors = c.messages.filter((m) => m.error === 'Rate limit exceeded')
-	assert.equal(errors.length, 3)
+	assert.equal(c.messages.filter((m) => m.error === 'Rate limit exceeded').length, 3)
 	c.ws.close()
 })
 
-test('polling broadcasts only what changed', async () => {
+test('refresh broadcasts external changes, one message per changed field', async () => {
 	const a = await connect()
 	const b = await connect()
 	await a.next(1)
 	await b.next(1)
-	await server.pollOnce() // establishes the baseline: volume, muted, outputDevice
-	await a.next(4)
 	controller.state.volume = 12
-	await server.pollOnce()
-	assert.deepEqual(await a.next(5), { volume: 12 })
-	assert.deepEqual(await b.next(5), { volume: 12 })
+	await server.refresh()
+	assert.deepEqual(await a.next(2), { volume: 12 })
+	assert.deepEqual(await b.next(2), { volume: 12 })
 	controller.state.outputDevice = 'Headset'
 	controller.state.muted = true
-	await server.pollOnce()
-	assert.deepEqual([await a.next(6), await a.next(7)], [{ muted: true }, { outputDevice: 'Headset' }])
-	await server.pollOnce() // nothing changed
-	await settle()
-	assert.equal(a.messages.length, 7)
+	await server.refresh()
+	assert.deepEqual([await a.next(3), await a.next(4)], [{ muted: true }, { outputDevice: 'Headset' }])
+	await server.refresh() // nothing changed
+	await sleep(50)
+	assert.equal(a.messages.length, 4)
 	a.ws.close()
 	b.ws.close()
 })
 
-test('polling timer runs when enabled', async () => {
+test('polling timer picks up external changes when enabled', async () => {
 	config.polling = { enabled: true, interval: 50 }
 	const addr = await server.restart()
 	url = `ws://127.0.0.1:${addr.port}`
 	const c = await connect()
 	await c.next(1)
-	await new Promise((r) => setTimeout(r, 200)) // let the baseline broadcast happen
 	controller.state.volume = 99
-	await new Promise((r) => setTimeout(r, 300))
-	assert.ok(
-		c.messages.some((m) => m.volume === 99 && Object.keys(m).length === 1),
-		JSON.stringify(c.messages),
-	)
+	assert.deepEqual(await c.until(eq({ volume: 99 })), { volume: 99 })
+	c.ws.close()
+})
+
+test('without polling, external changes are not pushed on their own', async () => {
+	const c = await connect()
+	await c.next(1)
+	controller.state.volume = 99
+	await sleep(200)
+	assert.equal(c.messages.length, 1)
 	c.ws.close()
 })
 
@@ -254,10 +329,8 @@ test('binding to 127.0.0.1 is honoured', async () => {
 })
 
 test('start rejects when the port is taken', async () => {
-	const addr = await (async () => {
-		await server.stop()
-		return server.start()
-	})()
+	await server.stop()
+	const addr = await server.start()
 	const second = createVolumeServer({
 		getConfig: () => ({ ...config, websocket: { ...config.websocket, port: addr.port } }),
 		controller,

@@ -8,8 +8,13 @@ This small Electron application enables you to control the OS audio volume over 
 - Get, mute, unmute or toggle the mute state of the audio volume
 - Get the current audio output device
 
-The application has an built in feature to poll the system audio values (volume and mute state) - this can be enabled or disabled in the configuration window (you can also define a polling interval).
-As soon as something changes, the updated values will be sent out to all connected WebSocket clients.
+Connected clients are kept in sync automatically:
+
+- **After every command** (`setVolume`, `increaseVolume`, `decreaseVolume`, `mute`, `unmute`, `toggleMute`) the app reads the resulting state and sends what changed to **all** connected clients straight away. This happens whether or not polling is enabled.
+- **Polling** (optional, configurable interval) also picks up changes made outside the app, such as media keys, the Windows mixer or other apps.
+- When a client connects, it receives the full state. If anything changed since the last update, the other clients get those changes too.
+
+Updates contain only the fields that changed, one message per field, for example `{ "volume": 42 }` or `{ "muted": true }`.
 
 ## Supported OS
 
@@ -31,7 +36,7 @@ After installing the application, it will run as a menu bar application. By clic
 Inside the configuration screen, you can
 
 - select the port, on which clients can connect to the WebSocket server.
-- enable or disable the polling feature and set a polling interval.
+- enable or disable polling for changes made outside the app, and set the polling interval.
 - select, wether the application should auto start together with the system.
 
 - choose whether clients may connect from the network or only from this computer.
