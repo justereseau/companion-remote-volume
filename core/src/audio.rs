@@ -11,6 +11,7 @@ use std::thread;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
+use crate::apps::{self, App};
 use crate::backend::{AudioError, AudioResult, Backend, ErrorCode, Features};
 
 type Job = Box<dyn FnOnce(&mut dyn Backend) + Send>;
@@ -135,4 +136,54 @@ impl AudioHandle {
     pub async fn features(&self) -> AudioResult<Features> {
         self.run(|b| b.features()).await
     }
+
+    /// Every app playing audio, grouped and sorted (see [`crate::apps`]).
+    pub async fn list_apps(&self) -> AudioResult<Vec<App>> {
+        self.run(|b| b.list_app_sessions().map(apps::group)).await?
+    }
+
+    /// Set the volume of every session of the app `target` names.
+    pub async fn set_app_volume(&self, target: String, percent: u8) -> AudioResult<()> {
+        self.run(move |b| {
+            let app = find_app(b, &target)?;
+            b.set_app_volume(&app.id, percent)
+        })
+        .await?
+    }
+
+    /// Move an app's volume by `delta` percent from its reported (highest) volume, within 0-100.
+    /// Every session ends up at the same level.
+    pub async fn change_app_volume(&self, target: String, delta: i16) -> AudioResult<()> {
+        self.run(move |b| {
+            let app = find_app(b, &target)?;
+            let next = (i16::from(app.volume) + delta).clamp(0, 100) as u8;
+            b.set_app_volume(&app.id, next)
+        })
+        .await?
+    }
+
+    pub async fn set_app_muted(&self, target: String, muted: bool) -> AudioResult<()> {
+        self.run(move |b| {
+            let app = find_app(b, &target)?;
+            b.set_app_muted(&app.id, muted)
+        })
+        .await?
+    }
+
+    /// Mute the app unless it is muted (every session muted); then unmute it.
+    pub async fn toggle_app_mute(&self, target: String) -> AudioResult<()> {
+        self.run(move |b| {
+            let app = find_app(b, &target)?;
+            b.set_app_muted(&app.id, !app.muted)
+        })
+        .await?
+    }
+}
+
+/// The app a client named, looked up fresh: apps come and go, and Pulse stream indexes don't last.
+fn find_app(backend: &mut dyn Backend, target: &str) -> AudioResult<App> {
+    let apps = apps::group(backend.list_app_sessions()?);
+    apps::resolve(&apps, target)
+        .cloned()
+        .ok_or_else(|| AudioError::new(ErrorCode::NotFound, format!("no app matches {target:?}")))
 }

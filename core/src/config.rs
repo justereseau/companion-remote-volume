@@ -40,10 +40,18 @@ pub struct Polling {
     pub interval: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppsConfig {
+    /// Report per-app audio (`apps` state, app actions) to clients. Connected clients can see which
+    /// apps are playing audio; turning this off hides that and refuses the app actions.
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub websocket: WsConfig,
     pub polling: Polling,
+    pub apps: AppsConfig,
 }
 
 impl Default for Config {
@@ -59,6 +67,7 @@ impl Default for Config {
                 enabled: false,
                 interval: 1000,
             },
+            apps: AppsConfig { enabled: true },
         }
     }
 }
@@ -74,6 +83,7 @@ impl Config {
                 "allowedOrigins": self.websocket.allowed_origins,
             },
             "polling": { "enabled": self.polling.enabled, "interval": self.polling.interval },
+            "apps": { "enabled": self.apps.enabled },
             "version": CONFIG_VERSION,
         })
     }
@@ -147,6 +157,7 @@ pub fn sanitize(input: &Value, previous: &Config) -> Config {
         .get("polling")
         .and_then(Value::as_object)
         .unwrap_or(&empty);
+    let apps = src.get("apps").and_then(Value::as_object).unwrap_or(&empty);
 
     let host = match ws.get("host").and_then(Value::as_str) {
         Some(h) if BIND_ADDRESSES.contains(&h) => h.to_string(),
@@ -174,6 +185,12 @@ pub fn sanitize(input: &Value, previous: &Config) -> Config {
                 .unwrap_or(previous.polling.enabled),
             interval: clamp_int(polling.get("interval"), 100, 10000)
                 .map_or(previous.polling.interval, |i| i as u32),
+        },
+        apps: AppsConfig {
+            enabled: apps
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(previous.apps.enabled),
         },
     }
 }
@@ -448,6 +465,21 @@ mod tests {
                 .polling
                 .enabled
         );
+    }
+
+    #[test]
+    fn app_tracking_is_on_by_default_and_only_a_boolean_changes_it() {
+        assert!(defaults().apps.enabled);
+        let off = sanitize(&json!({ "apps": { "enabled": false } }), &defaults());
+        assert!(!off.apps.enabled);
+        for keep in [
+            json!({}),
+            json!({ "apps": 1 }),
+            json!({ "apps": { "enabled": "no" } }),
+        ] {
+            assert!(!sanitize(&keep, &off).apps.enabled, "{keep}");
+        }
+        assert_eq!(off.to_json()["apps"], json!({ "enabled": false }));
     }
 
     #[test]

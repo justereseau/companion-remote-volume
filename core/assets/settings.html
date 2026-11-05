@@ -178,6 +178,10 @@
 			<label for="pollingInterval">Polling Interval (ms):</label>
 			<input type="number" id="pollingInterval" value="1000" min="100" max="10000" disabled />
 			<div class="hint">Polling picks up changes made outside the app. Commands are always pushed to all clients.</div>
+			<div class="checks">
+				<label for="enableApps"><input type="checkbox" id="enableApps" />Per-app volume and mute</label>
+			</div>
+			<div class="hint">Lets clients list and control the apps playing audio, so they can also see which apps those are.</div>
 			<button id="save">Save</button>
 			<div id="status" class="hint" role="status"></div>
 
