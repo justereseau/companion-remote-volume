@@ -5,7 +5,6 @@
 		":dependencyDashboard",
 		"helpers:pinGitHubActionDigestsToSemver",
 		":maintainLockFilesWeekly",
-		"security:minimumReleaseAgeNpm",
 		":semanticCommits"
 	],
 	"forkProcessing": "enabled",
@@ -23,50 +22,12 @@
 	},
 	"packageRules": [
 		{
-			"description": "Electron ships Chromium security fixes almost weekly – update as soon as they are out. It is a devDependency but ships inside the app, so its updates are fix(deps) and trigger a release-please patch release.",
-			"matchPackageNames": ["electron"],
-			"groupName": "electron",
-			"schedule": ["at any time"],
-			"minimumReleaseAge": "1 day",
-			"semanticCommitType": "fix",
-			"semanticCommitScope": "deps"
-		},
-		{
-			"description": "Keep electron-builder and its sub-packages in one PR",
-			"matchPackageNames": ["electron-builder", "app-builder-lib", "dmg-builder", "electron-builder-squirrel-windows", "electron-publish"],
-			"groupName": "electron-builder"
-		},
-		{
-			"description": "Automerge non-major updates of dev tooling and actions once CI is green",
-			"matchDepTypes": ["devDependencies", "action"],
-			"matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"],
-			"matchPackageNames": ["!electron"],
-			"automerge": true
-		},
-		{
-			"description": "Group GitHub Actions",
-			"matchManagers": ["github-actions"],
-			"groupName": "github actions"
-		},
-		{
-			"description": "All minor and patch updates (Rust crates, npm, GitHub Actions) in one weekly PR. Electron stays out: it ships Chromium security fixes and keeps its own fast PR. Not automerged because it contains crates that ship in the app; fix(deps) so release-please cuts a patch release.",
+			"description": "All minor and patch updates (Rust crates and GitHub Actions) in one weekly PR. Not automerged because it contains crates that ship in the app; fix(deps) so release-please cuts a patch release. Major updates keep their own PR.",
 			"matchUpdateTypes": ["minor", "patch"],
-			"matchPackageNames": ["!electron"],
 			"groupName": "non-major dependencies",
 			"automerge": false,
 			"semanticCommitType": "fix",
 			"semanticCommitScope": "deps"
-		},
-		{
-			"description": "Node in CI (.nvmrc) and engines must match the Node bundled with Electron – no automatic major bumps",
-			"matchPackageNames": ["node"],
-			"matchUpdateTypes": ["major"],
-			"enabled": false
-		},
-		{
-			"description": "engines.node is a minimum, not a pin – only change it when a new version falls outside the range",
-			"matchDepTypes": ["engines"],
-			"rangeStrategy": "replace"
 		}
 	]
 }
