@@ -10,7 +10,7 @@
 			"changelog-path": "CHANGELOG.md",
 			"extra-files": [
 				{ "type": "toml", "path": "core/Cargo.toml", "jsonpath": "$.package.version" },
-				{ "type": "toml", "path": "core/Cargo.lock", "jsonpath": "$.package[?(@.name=='remote-volume-core')].version" }
+				{ "type": "toml", "path": "core/Cargo.lock", "jsonpath": "$.package[?(@.name.value=='remote-volume-core')].version" }
 			]
 		}
 	},
