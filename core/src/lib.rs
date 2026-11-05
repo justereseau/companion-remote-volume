@@ -14,3 +14,11 @@ pub mod server;
 pub mod settings;
 pub mod volume;
 pub mod wsproto;
+
+/// The release version (release-please keeps `Cargo.toml` in step with each release). Debug builds,
+/// i.e. a plain `cargo run` or `cargo build`, add `-dev` so they are never mistaken for a release.
+pub const VERSION: &str = if cfg!(debug_assertions) {
+    concat!(env!("CARGO_PKG_VERSION"), "-dev")
+} else {
+    env!("CARGO_PKG_VERSION")
+};

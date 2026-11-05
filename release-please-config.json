@@ -7,7 +7,11 @@
 	"packages": {
 		".": {
 			"package-name": "remote-volume",
-			"changelog-path": "CHANGELOG.md"
+			"changelog-path": "CHANGELOG.md",
+			"extra-files": [
+				{ "type": "toml", "path": "core/Cargo.toml", "jsonpath": "$.package.version" },
+				{ "type": "toml", "path": "core/Cargo.lock", "jsonpath": "$.package[?(@.name=='remote-volume-core')].version" }
+			]
 		}
 	},
 	"changelog-sections": [

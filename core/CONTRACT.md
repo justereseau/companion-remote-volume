@@ -100,7 +100,7 @@ Returned by `getCapabilities` and as the data of the `ready` event:
 ```json
 {
   "protocol": 1,
-  "version": "0.1.0",
+  "version": "1.3.0",
   "os": "linux",
   "backend": "pulse",
   "available": true,
