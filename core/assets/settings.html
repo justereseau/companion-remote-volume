@@ -16,23 +16,46 @@
 				background-color: #121212;
 				color: #ffffff;
 				margin: 0;
+				padding: 24px 16px;
 				display: flex;
 				justify-content: center;
 			}
 
 			.container {
-				background-color: #1e1e1e;
-				padding: 20px 24px;
 				width: 100%;
-				max-width: 440px;
-				min-height: 100vh;
-				text-align: center;
+				max-width: 480px;
 			}
 
 			h1 {
 				color: #bb86fc;
 				font-size: 24px;
-				margin: 0 0 8px;
+				margin: 0 0 16px;
+				text-align: center;
+			}
+
+			fieldset {
+				background-color: #1e1e1e;
+				border: 1px solid #2c2c2c;
+				border-radius: 8px;
+				margin: 0 0 12px;
+				padding: 4px 16px 16px;
+				min-width: 0;
+			}
+
+			legend {
+				float: left;
+				width: 100%;
+				padding: 12px 0 0;
+				margin-bottom: 6px;
+				color: #bb86fc;
+				font-size: 13px;
+				font-weight: 600;
+				letter-spacing: 0.04em;
+				text-transform: uppercase;
+			}
+
+			legend + * {
+				clear: left;
 			}
 
 			label {
@@ -47,7 +70,7 @@
 			select,
 			textarea {
 				padding: 8px 10px;
-				border: none;
+				border: 1px solid transparent;
 				border-radius: 5px;
 				background-color: #333333;
 				color: #ffffff;
@@ -61,18 +84,23 @@
 				min-height: 4.5em;
 			}
 
-			.checks {
-				display: flex;
-				justify-content: center;
-				gap: 24px;
-				margin-top: 14px;
+			input:focus,
+			select:focus,
+			textarea:focus {
+				outline: none;
+				border-color: #bb86fc;
 			}
 
-			.checks label {
-				display: inline-flex;
+			input:disabled {
+				color: #888888;
+				background-color: #2a2a2a;
+				cursor: not-allowed;
+			}
+
+			label.check {
+				display: flex;
 				align-items: center;
-				gap: 6px;
-				margin: 0;
+				gap: 8px;
 				cursor: pointer;
 			}
 
@@ -80,6 +108,8 @@
 				width: 16px;
 				height: 16px;
 				margin: 0;
+				flex: none;
+				accent-color: #bb86fc;
 			}
 
 			.row {
@@ -92,92 +122,109 @@
 				min-width: 0;
 			}
 
-			.row button {
-				width: auto;
-				margin-top: 0;
-				padding: 0 12px;
-				font-size: 14px;
-			}
-
 			.hint {
 				font-size: 12px;
-				color: #aaa;
+				color: #aaaaaa;
 				margin-top: 4px;
 				overflow-wrap: anywhere;
 			}
 
-			input:focus,
-			select:focus,
-			textarea:focus {
-				outline: none;
-				background-color: #444444;
-			}
-
 			button {
 				background-color: #bb86fc;
-				color: #ffffff;
+				color: #121212;
+				font-weight: 600;
 				padding: 10px;
 				border: none;
 				border-radius: 5px;
 				cursor: pointer;
-				transition: background-color 0.3s ease;
-				width: 100%;
+				transition: background-color 0.2s ease;
 				font-size: 16px;
-				margin-top: 16px;
+				font-family: inherit;
 			}
 
 			button:hover {
-				background-color: #9b59b6;
+				background-color: #a370e0;
 			}
 
-			input[disabled] {
-				background-color: #444444;
+			button:focus-visible {
+				outline: 2px solid #ffffff;
+				outline-offset: 2px;
+			}
+
+			.row button {
+				padding: 0 14px;
+				font-size: 14px;
+			}
+
+			#save {
+				width: 100%;
+				margin-top: 4px;
 			}
 
 			#status {
 				min-height: 1.2em;
+				text-align: center;
 			}
 
 			#status.error {
 				color: #ff8a80;
 			}
 
-			footer a {
-				color: #bb86fc;
+			footer {
+				margin-top: 16px;
+				font-size: 12px;
+				color: #999999;
+				text-align: center;
+				line-height: 1.5;
 			}
 
-			footer {
-				margin-top: 8px;
-				font-size: 12px;
-				color: #999;
+			footer a {
+				color: #bb86fc;
 			}
 		</style>
 	</head>
 	<body>
 		<div class="container">
 			<h1>Remote Volume</h1>
-			<label for="port">WebSocket Port:</label>
-			<input type="number" id="port" value="2501" min="1" max="65535" />
-			<label for="host">Accept connections from:</label>
-			<select id="host">
-				<option value="0.0.0.0">Network (all interfaces)</option>
-				<option value="127.0.0.1">This computer only</option>
-			</select>
-			<label for="token">Access token (optional):</label>
-			<div class="row">
-				<input type="text" id="token" autocomplete="off" spellcheck="false" placeholder="none" />
-				<button id="generateToken" type="button">Generate</button>
-			</div>
-			<div class="hint">If set, clients must connect to ws://host:port/?token=&lt;token&gt;</div>
-			<label for="origins">Allowed browser origins (optional):</label>
-			<textarea id="origins" spellcheck="false" placeholder="http://localhost:8080"></textarea>
-			<div class="hint">One per line. Companion and other native clients need no entry. Empty rejects every web page.</div>
-			<div class="checks">
-				<label for="enablePolling"><input type="checkbox" id="enablePolling" />Enable Polling</label>
-			</div>
-			<label for="pollingInterval">Polling Interval (ms):</label>
-			<input type="number" id="pollingInterval" value="1000" min="100" max="10000" disabled />
-			<div class="hint">Polling picks up changes made outside the app. Commands are always pushed to all clients.</div>
+
+			<fieldset>
+				<legend>Connection</legend>
+				<label for="port">WebSocket port</label>
+				<input type="number" id="port" value="2501" min="1" max="65535" />
+				<label for="host">Accept connections from</label>
+				<select id="host">
+					<option value="0.0.0.0">Network (all interfaces)</option>
+					<option value="127.0.0.1">This computer only</option>
+				</select>
+			</fieldset>
+
+			<fieldset>
+				<legend>Access</legend>
+				<label for="token">Access token (optional)</label>
+				<div class="row">
+					<input type="text" id="token" autocomplete="off" spellcheck="false" placeholder="none" />
+					<button id="generateToken" type="button">Generate</button>
+				</div>
+				<div class="hint">If set, clients must connect to ws://host:port/?token=&lt;token&gt;</div>
+				<label for="origins">Allowed browser origins (optional)</label>
+				<textarea id="origins" spellcheck="false" placeholder="http://localhost:8080"></textarea>
+				<div class="hint">One per line. Companion and other native clients need no entry. Empty rejects every web page.</div>
+			</fieldset>
+
+			<fieldset>
+				<legend>Updates</legend>
+				<label class="check" for="enablePolling"><input type="checkbox" id="enablePolling" />Poll for outside changes</label>
+				<div class="hint">Picks up changes made outside the app (media keys, the OS mixer). Commands are always pushed to all clients.</div>
+				<label for="pollingInterval">Polling interval (ms)</label>
+				<input type="number" id="pollingInterval" value="1000" min="100" max="10000" disabled />
+			</fieldset>
+
+			<fieldset>
+				<legend>Apps</legend>
+				<label class="check" for="enableApps"><input type="checkbox" id="enableApps" />Per-app volume and mute</label>
+				<div class="hint">Lets clients list and control the apps playing audio. They can then see which apps those are.</div>
+			</fieldset>
+
 			<button id="save">Save</button>
 			<div id="status" class="hint" role="status"></div>
 

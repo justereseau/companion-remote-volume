@@ -2,8 +2,8 @@
 //! limiting, capabilities. Port of `lib/protocol.js`; free of I/O so it is unit-tested directly.
 //!
 //! Protocol v1 (setVolume, increaseVolume, decreaseVolume, getState, isMuted, mute, unmute,
-//! toggleMute) is unchanged. v2 adds `getCapabilities`, string targets (`app`, `device`),
-//! capability gating and the "not found" errors; see the README.
+//! toggleMute) is unchanged. v2 adds `getCapabilities`, the per-app actions, string targets
+//! (`app`, `device`), capability gating and the "not found" errors; see the README.
 
 use std::time::Instant;
 
@@ -143,6 +143,51 @@ pub const BUILTIN_ACTIONS: [ActionSpec; 9] = [
     mutating("toggleMute"),
 ];
 
+const fn app_ranged(name: &'static str, min: i64, max: i64, error: &'static str) -> ActionSpec {
+    ActionSpec {
+        target: Some(TargetKind::App),
+        requires: Some("apps.volume"),
+        ..ranged(name, min, max, error)
+    }
+}
+
+const fn app_mute(name: &'static str) -> ActionSpec {
+    ActionSpec {
+        target: Some(TargetKind::App),
+        requires: Some("apps.mute"),
+        ..mutating(name)
+    }
+}
+
+/// Per-app volume and mute (protocol v2). Each action except `getApps` names its `app`.
+pub const APP_ACTIONS: [ActionSpec; 7] = [
+    ActionSpec {
+        requires: Some("apps"),
+        ..replying("getApps")
+    },
+    app_ranged(
+        "setAppVolume",
+        0,
+        100,
+        "Invalid value for setAppVolume. Must be an integer between 0 and 100.",
+    ),
+    app_ranged(
+        "increaseAppVolume",
+        1,
+        99,
+        "Invalid value for increaseAppVolume. Must be an integer between 1 and 99.",
+    ),
+    app_ranged(
+        "decreaseAppVolume",
+        1,
+        99,
+        "Invalid value for decreaseAppVolume. Must be an integer between 1 and 99.",
+    ),
+    app_mute("muteApp"),
+    app_mute("unmuteApp"),
+    app_mute("toggleAppMute"),
+];
+
 /// One validated client message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Message {
@@ -244,9 +289,11 @@ pub fn capabilities_json(features: &Features) -> Value {
     })
 }
 
-/// Whether the dotted capability (`"apps.volume"`) is currently supported. Unknown paths are not.
+/// Whether the dotted capability (`"apps.volume"`) is currently supported. `"apps"` means volume or
+/// mute. Unknown paths are not.
 pub fn has_capability(features: &Features, path: &str) -> bool {
     match path {
+        "apps" => features.apps_volume || features.apps_mute,
         "outputDevices.list" => features.devices_list,
         "outputDevices.select" => features.devices_select,
         "apps.volume" => features.apps_volume,
@@ -520,8 +567,46 @@ mod tests {
         );
     }
 
-    // The built-in table has no targeted actions yet (they arrive with the device and app
-    // features), so the target rules are exercised with a table that declares them.
+    #[test]
+    fn app_actions_need_an_app_and_their_own_ranges() {
+        let parse_apps = |v: Value| parse_message(v.to_string().as_bytes(), &APP_ACTIONS);
+        let m = parse_apps(json!({"action":"setAppVolume","app":"spotify","value":0})).unwrap();
+        assert_eq!(
+            (m.action, m.value, m.app.as_deref()),
+            ("setAppVolume", Some(0), Some("spotify"))
+        );
+        assert_eq!(
+            parse_apps(json!({"action":"increaseAppVolume","app":"spotify","value":0}))
+                .unwrap_err()
+                .error,
+            "Invalid value for increaseAppVolume. Must be an integer between 1 and 99."
+        );
+        assert!(parse_apps(json!({"action":"decreaseAppVolume","app":"x","value":99})).is_ok());
+        assert!(parse_apps(json!({"action":"toggleAppMute","app":"x"})).is_ok());
+        assert!(parse_apps(json!({"action":"muteApp"})).is_err());
+        let all = parse_apps(json!({"action":"getApps","app":"ignored"})).unwrap();
+        assert_eq!((all.action, all.app), ("getApps", None));
+        for spec in APP_ACTIONS {
+            let volume = spec.name.contains("Volume");
+            assert_eq!(spec.mutates, spec.name != "getApps", "{}", spec.name);
+            assert_eq!(spec.reply, spec.name == "getApps", "{}", spec.name);
+            let needs = match spec.name {
+                "getApps" => "apps",
+                _ if volume => "apps.volume",
+                _ => "apps.mute",
+            };
+            assert_eq!(spec.requires, Some(needs), "{}", spec.name);
+        }
+        let only_mute = Features {
+            apps_mute: true,
+            ..Features::default()
+        };
+        assert!(has_capability(&only_mute, "apps"));
+        assert!(!has_capability(&Features::default(), "apps"));
+    }
+
+    // Device actions arrive with #12, so the target rules are exercised with a table that declares
+    // both kinds.
     fn targeted() -> Vec<ActionSpec> {
         let mut t = BUILTIN_ACTIONS.to_vec();
         t.push(ActionSpec {

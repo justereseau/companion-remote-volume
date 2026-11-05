@@ -7,6 +7,7 @@ A small native app that lets you control the OS audio volume over a WebSocket co
 - Get, set, increase or decrease the audio volume
 - Get, mute, unmute or toggle the mute state of the audio volume
 - Get the current audio output device
+- Per-app volume and mute ([protocol v2](#protocol-v2)): the protocol is in place, the Linux and Windows backends are in progress, so no OS reports it as supported yet
 
 Connected clients are kept in sync automatically:
 
@@ -36,6 +37,7 @@ Open the settings page at `http://127.0.0.1:2502/` (start the app with `--open` 
 - choose whether clients may connect from the network or only from this computer.
 - set an optional access token and the allowed browser origins.
 - enable or disable polling for changes made outside the app, and set the polling interval.
+- turn per-app volume and mute on or off (on by default).
 
 The settings are saved in `config.json` in `%APPDATA%\RemoteVolume`, `~/Library/Application Support/RemoteVolume` or `~/.config/RemoteVolume` (`--config-dir` or `RV_CONFIG_DIR` change it). On the first start the settings of the old Electron app are imported if they are found. Run `remote-volume --help` for all options.
 
@@ -48,6 +50,7 @@ Anyone who can reach the WebSocket port can change your volume. To limit that:
 - **Browser pages are rejected.** Connections carrying an `Origin` header (that is, from a web page) are refused with HTTP 403. This stops any website you visit from controlling your volume through `ws://localhost:2501`. Native clients such as Companion send no `Origin` and are unaffected. To allow a specific web UI, add its origin in the settings page.
 - Messages are limited to 1 KB, 20 commands/second per client and 32 simultaneous clients.
 - The settings page can change the access token, so it listens on `127.0.0.1` only and accepts changes only from its own page. Anyone who can use your computer can still open it.
+- **Privacy:** with per-app volume and mute on, connected clients can see which apps are playing audio (e.g. `spotify`, `discord`). Turn it off in the settings page if that is a concern; the `apps` list then disappears and the app actions are refused.
 
 ## Building from source
 
@@ -170,6 +173,84 @@ When using [Bitfocus Companion](https://bitfocus.io/companion) you don't need th
   	"action": "isMuted"
   }
   ```
+
+### Errors
+
+A refused or failed action is answered with `{ "action": "<action>", "response": { "error": "<text>" } }`. When the message has no readable `action`, or the rate limit is hit, the answer is `{ "error": "<text>" }`. Clients may match on these texts:
+
+| Error | When |
+|---|---|
+| `Invalid action` | Unknown `action` |
+| `Invalid value for <action>. …` | `value` missing, not an integer or out of range |
+| `Invalid app for <action>. …` | `app` missing, not a string, empty, over 256 characters or with control characters |
+| `Failed to process message` | Not a JSON object |
+| `Failed to execute action` | The OS call failed |
+| `Rate limit exceeded` | More than 20 messages/second |
+| `Not supported on this OS` | Protocol v2: the feature is unavailable here (see `capabilities`) |
+| `App not found` | Protocol v2: no running app matches `app` |
+
+## Protocol v2
+
+Version 2 only **adds** to version 1: every v1 message, reply and state update keeps its shape, so v1 clients keep working unchanged. Clients should ignore keys they don't know; future versions follow the same rule.
+
+### Capabilities
+
+What this computer supports right now. It depends on the OS and on the moment (for example, Linux without a running PulseAudio/PipeWire server reports `false`), and per-app audio can be turned off in the settings. The state sent on connect carries it as a last `capabilities` key, and `getCapabilities` asks again:
+
+```json
+{ "action": "getCapabilities" }
+```
+
+```json
+{
+	"capabilities": {
+		"protocolVersion": 2,
+		"outputDevices": { "list": false, "select": false },
+		"apps": { "volume": true, "mute": true }
+	}
+}
+```
+
+An action whose capability is `false` is answered with `Not supported on this OS` and does nothing. `outputDevices` is reserved for device selection, which is not implemented yet. Capabilities are not pushed when they change; ask again with `getCapabilities`.
+
+### Per-app volume and mute
+
+An **app** is every audio session of one program, grouped. Its `id` is the program's file name, lowercased and without `.exe` (`spotify`, `chrome`, `discord`), so it stays the same when the program restarts. `name` is its display name.
+
+- `volume` is relative to the master volume (Windows session volume; a PulseAudio/PipeWire stream volume). With PulseAudio's `flat-volumes` on, raising an app can also raise the master volume.
+- When a program has several sessions (browser tabs, helper processes), the reported `volume` is the highest of them, `muted` is `true` only when every session is muted, and every action applies to all of them.
+- The `app` in an action is matched against the `id`, ignoring case and a trailing `.exe` (`Spotify`, `spotify.exe` and `spotify` are the same), then against the display name.
+
+**State:** `apps` is part of the state sent on connect and of `getState`, and the whole list is pushed again whenever anything in it changes (an app starts or stops, a volume or mute changes):
+
+```json
+{ "apps": [{ "id": "spotify", "name": "Spotify", "volume": 80, "muted": false }] }
+```
+
+`apps` is absent where per-app audio is unavailable or turned off. A client that had a list gets `{ "apps": null }` when it is turned off.
+
+**Actions:**
+
+| Action | Payload | Capability |
+|---|---|---|
+| `getApps` | `{ "action": "getApps" }`, replies `{ "apps": [...] }` | `apps.volume` or `apps.mute` |
+| `setAppVolume` | `{ "action": "setAppVolume", "app": "spotify", "value": 40 }` (0 - 100) | `apps.volume` |
+| `increaseAppVolume` | `{ "action": "increaseAppVolume", "app": "spotify", "value": 10 }` (1 - 99) | `apps.volume` |
+| `decreaseAppVolume` | `{ "action": "decreaseAppVolume", "app": "spotify", "value": 10 }` (1 - 99) | `apps.volume` |
+| `muteApp` | `{ "action": "muteApp", "app": "discord" }` | `apps.mute` |
+| `unmuteApp` | `{ "action": "unmuteApp", "app": "discord" }` | `apps.mute` |
+| `toggleAppMute` | `{ "action": "toggleAppMute", "app": "discord" }` | `apps.mute` |
+
+Like the v1 commands, the changing actions send no reply: the new `apps` list is pushed to every client. If the app is not running the reply is `App not found`, so a client can grey out its button.
+
+**Support:**
+
+| OS | Volume | Mute | Status |
+|---|---|---|---|
+| Linux, PulseAudio / PipeWire | yes | yes | in progress ([#18](https://github.com/Justereseau/companion-remote-volume/issues/18)) |
+| Windows | yes | yes | in progress ([#17](https://github.com/Justereseau/companion-remote-volume/issues/17)) |
+| macOS | no | maybe on 14.2+ | being investigated ([#19](https://github.com/Justereseau/companion-remote-volume/issues/19)) |
+| Linux, ALSA only | no | no | not possible |
 
 ## Credits
 

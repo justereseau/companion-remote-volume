@@ -16,6 +16,7 @@ const fill = (config) => {
 	$('enablePolling').checked = config.polling.enabled
 	$('pollingInterval').value = config.polling.interval
 	$('pollingInterval').disabled = !config.polling.enabled
+	$('enableApps').checked = config.apps.enabled
 }
 
 const load = async () => {
@@ -54,6 +55,7 @@ const save = async () => {
 				.filter(Boolean),
 		},
 		polling: { enabled: $('enablePolling').checked, interval },
+		apps: { enabled: $('enableApps').checked },
 	}
 	try {
 		const response = await fetch('/api/config', {

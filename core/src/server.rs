@@ -25,13 +25,15 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{http, Error as WsError, Message as WsMessage};
 use tokio_tungstenite::{accept_hdr_async_with_config, WebSocketStream};
 
+use crate::apps;
 use crate::audio::AudioHandle;
+use crate::backend::{AudioError, ErrorCode, Features};
 use crate::config::Config;
 use crate::log::Log;
 use crate::wsproto::{
     admit_client, capabilities_json, error_reply, errors, has_capability, parse_message,
-    same_value, ActionSpec, Handshake, Message, RateLimiter, Refusal, TargetKind, BUILTIN_ACTIONS,
-    MAX_PAYLOAD_BYTES,
+    same_value, ActionSpec, Handshake, Message, RateLimiter, Refusal, TargetKind, APP_ACTIONS,
+    BUILTIN_ACTIONS, MAX_PAYLOAD_BYTES,
 };
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -48,9 +50,9 @@ pub enum CommandError {
 pub type Command = Arc<dyn Fn(Message) -> BoxFuture<Result<Value, CommandError>> + Send + Sync>;
 pub type StateProvider = Arc<dyn Fn() -> BoxFuture<Result<Value, String>> + Send + Sync>;
 
-/// Extension points for the protocol v2 features (device selection, per-app audio): extra actions
-/// with their handlers, and extra state fields. Empty by default, which is protocol v1 plus
-/// `getCapabilities`.
+/// Extension points for more protocol v2 features (device selection): extra actions with their
+/// handlers, and extra state fields. Empty by default, which is protocol v1, `getCapabilities` and
+/// the per-app actions.
 #[derive(Default, Clone)]
 pub struct Extensions {
     pub actions: Vec<ActionSpec>,
@@ -138,8 +140,9 @@ impl Server {
         ext: Extensions,
     ) -> Server {
         let mut actions = BUILTIN_ACTIONS.to_vec();
+        actions.extend(APP_ACTIONS);
         actions.extend(ext.actions.iter().copied());
-        let mut state_keys = vec!["volume", "muted", "outputDevice"];
+        let mut state_keys = vec!["volume", "muted", "outputDevice", "apps"];
         state_keys.extend(ext.state.iter().map(|(key, _)| *key));
         let (events, _) = broadcast::channel(256);
         Server {
@@ -263,6 +266,10 @@ impl Server {
         if polling_restarted {
             self.start_polling();
         }
+        if previous.apps != next.apps {
+            // Clients see the `apps` list appear, or get `"apps": null` when tracking is turned off.
+            self.refresh().await;
+        }
         inner.log.info(&format!(
             "Settings applied without restart (disconnected {disconnected}, polling {}).",
             if polling_restarted {
@@ -326,15 +333,32 @@ impl Inner {
         state.insert("volume".into(), json!(audio.volume));
         state.insert("muted".into(), json!(audio.muted));
         state.insert("outputDevice".into(), json!(audio.output_device));
+        // `apps` is left out where per-app audio is unsupported or turned off, and when listing
+        // fails: volume and mute must still get through. Clients that saw a list then get
+        // `"apps": null`.
+        if self.config.read().unwrap().apps.enabled {
+            if let Ok(list) = self.audio.list_apps().await {
+                state.insert("apps".into(), apps::to_json(&list));
+            }
+        }
         for (key, provider) in &self.ext.state {
             state.insert((*key).into(), provider().await?);
         }
         Ok(state)
     }
 
+    /// What the backend supports right now, minus what the configuration turns off.
+    async fn features(&self) -> Result<Features, String> {
+        let mut features = self.audio.features().await.map_err(|e| e.to_string())?;
+        if !self.config.read().unwrap().apps.enabled {
+            features.apps_volume = false;
+            features.apps_mute = false;
+        }
+        Ok(features)
+    }
+
     async fn capabilities(&self) -> Result<Value, String> {
-        let features = self.audio.features().await.map_err(|e| e.to_string())?;
-        Ok(capabilities_json(&features))
+        Ok(capabilities_json(&self.features().await?))
     }
 
     fn broadcast(&self, message: &Value, exclude: Option<u64>) {
@@ -408,13 +432,15 @@ impl Inner {
     async fn execute(&self, msg: &Message, spec: &ActionSpec) -> Result<Outcome, String> {
         // Ask before acting: an action the machine cannot do never reaches the controller.
         if let Some(path) = spec.requires {
-            let features = self.audio.features().await.map_err(|e| e.to_string())?;
-            if !has_capability(&features, path) {
+            if !has_capability(&self.features().await?, path) {
                 return Ok(Outcome::Refused(errors::NOT_SUPPORTED));
             }
         }
         let failed = |e: crate::backend::AudioError| e.to_string();
         let value = msg.value.map(|v| v as u8).unwrap_or(0);
+        if APP_ACTIONS.iter().any(|a| a.name == msg.action) {
+            return self.execute_app(msg, value).await;
+        }
         let result = match msg.action {
             "setVolume" => self
                 .audio
@@ -478,6 +504,45 @@ impl Inner {
             }
         };
         result.map(Outcome::Done)
+    }
+
+    /// The per-app actions. The backend resolves the target and acts in one job, so the app cannot
+    /// vanish in between; a target that matches nothing is `App not found`.
+    async fn execute_app(&self, msg: &Message, value: u8) -> Result<Outcome, String> {
+        let app = || msg.app.clone().unwrap_or_default();
+        let audio = &self.audio;
+        let result = match msg.action {
+            "getApps" => {
+                return match audio.list_apps().await {
+                    Ok(list) => Ok(Outcome::Done(json!({ "apps": apps::to_json(&list) }))),
+                    Err(error) => self.app_failure(msg.action, error),
+                }
+            }
+            "setAppVolume" => audio.set_app_volume(app(), value).await,
+            "increaseAppVolume" => audio.change_app_volume(app(), i16::from(value)).await,
+            "decreaseAppVolume" => audio.change_app_volume(app(), -i16::from(value)).await,
+            "muteApp" => audio.set_app_muted(app(), true).await,
+            "unmuteApp" => audio.set_app_muted(app(), false).await,
+            "toggleAppMute" => audio.toggle_app_mute(app()).await,
+            other => return Err(format!("no handler for {other}")),
+        };
+        match result {
+            Ok(()) => Ok(Outcome::Done(Value::Null)),
+            Err(error) => self.app_failure(msg.action, error),
+        }
+    }
+
+    fn app_failure(&self, action: &str, error: AudioError) -> Result<Outcome, String> {
+        match error.code {
+            ErrorCode::NotFound => {
+                self.log
+                    .warn(&format!("{action}: {}", errors::APP_NOT_FOUND));
+                Ok(Outcome::Refused(errors::APP_NOT_FOUND))
+            }
+            // The capability said yes but the OS said no (e.g. the Pulse server just went away).
+            ErrorCode::Unsupported => Ok(Outcome::Refused(errors::NOT_SUPPORTED)),
+            _ => Err(error.to_string()),
+        }
     }
 }
 

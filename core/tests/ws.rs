@@ -7,7 +7,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use remote_volume_core::audio::AudioHandle;
 use remote_volume_core::backend::{
-    AudioError, AudioResult, Backend, Capabilities, Device, ErrorCode, Features,
+    AppSession, AudioError, AudioResult, Backend, Capabilities, Device, ErrorCode, Features,
 };
 use remote_volume_core::config::{Config, Polling};
 use remote_volume_core::log::{Log, MemoryLog, NoLog};
@@ -34,6 +34,9 @@ struct FakeState {
     fail_mute: bool,
     /// Makes volume reads slow, like a real OS call.
     read_delay_ms: u64,
+    /// Per-app sessions; `None` = per-app audio unsupported (the default, like every OS today).
+    sessions: Option<Vec<AppSession>>,
+    fail_apps: bool,
 }
 
 type Shared = Arc<Mutex<FakeState>>;
@@ -94,6 +97,49 @@ impl Backend for FakeBackend {
     fn features(&mut self) -> Features {
         self.0.lock().unwrap().features
     }
+    fn list_app_sessions(&mut self) -> AudioResult<Vec<AppSession>> {
+        let s = self.0.lock().unwrap();
+        if s.fail_apps {
+            return Err(failure());
+        }
+        s.sessions
+            .clone()
+            .ok_or_else(|| AudioError::new(ErrorCode::Unsupported, "no per-app audio"))
+    }
+    fn set_app_volume(&mut self, id: &str, percent: u8) -> AudioResult<()> {
+        self.each_session(id, format!("setAppVolume {id} {percent}"), |x| {
+            x.volume = percent
+        })
+    }
+    fn set_app_muted(&mut self, id: &str, muted: bool) -> AudioResult<()> {
+        self.each_session(id, format!("setAppMuted {id} {muted}"), |x| x.muted = muted)
+    }
+}
+
+impl FakeBackend {
+    fn each_session(
+        &mut self,
+        id: &str,
+        call: String,
+        f: impl Fn(&mut AppSession),
+    ) -> AudioResult<()> {
+        let mut s = self.0.lock().unwrap();
+        if s.fail_apps {
+            return Err(failure());
+        }
+        s.calls.push(call);
+        let sessions = s.sessions.as_mut().expect("per-app audio enabled");
+        let mut found = false;
+        for x in sessions.iter_mut().filter(|x| x.id == id) {
+            f(x);
+            found = true;
+        }
+        if found {
+            Ok(())
+        } else {
+            Err(AudioError::new(ErrorCode::NotFound, id))
+        }
+    }
 }
 
 // ---- harness ------------------------------------------------------------------------------------
@@ -123,6 +169,8 @@ async fn env_with(config: Config, ext: Extensions) -> Env {
         fail_volume_reads: false,
         fail_mute: false,
         read_delay_ms: 0,
+        sessions: None,
+        fail_apps: false,
     }));
     let backend_state = state.clone();
     let audio = AudioHandle::spawn(move || Box::new(FakeBackend(backend_state)));
@@ -835,6 +883,8 @@ fn blank_state() -> FakeState {
         fail_volume_reads: false,
         fail_mute: false,
         read_delay_ms: 0,
+        sessions: None,
+        fail_apps: false,
     }
 }
 
@@ -924,7 +974,7 @@ async fn capabilities_are_never_broadcast_as_state_changes() {
     c.quiet().await;
 }
 
-// The device and app actions come later. These tests plug stand-ins into the extension points to
+// Device actions come with #12. These tests plug a stand-in ("things") into the extension points to
 // check the shared machinery: capability gating, string targets, not-found errors, structured state.
 
 struct V2 {
@@ -956,17 +1006,17 @@ fn v2_extensions() -> (Extensions, V2) {
         target: Some(TargetKind::App),
         requires: Some("apps.volume"),
         mutates: true,
-        ..ActionSpec::new("setAppVolume")
+        ..ActionSpec::new("setThingVolume")
     });
     ext.actions.push(ActionSpec {
         requires: Some("apps.volume"),
         reply: true,
-        ..ActionSpec::new("getApps")
+        ..ActionSpec::new("getThings")
     });
 
     let (a, c, f) = (apps.clone(), calls.clone(), fail.clone());
     ext.commands.insert(
-        "setAppVolume",
+        "setThingVolume",
         Arc::new(move |msg| {
             let (a, c, f) = (a.clone(), c.clone(), f.clone());
             Box::pin(async move {
@@ -995,10 +1045,10 @@ fn v2_extensions() -> (Extensions, V2) {
     );
     let a = apps.clone();
     ext.commands.insert(
-        "getApps",
+        "getThings",
         Arc::new(move |_| {
             let a = a.clone();
-            Box::pin(async move { Ok(json!({ "apps": a.lock().unwrap().clone() })) })
+            Box::pin(async move { Ok(json!({ "things": a.lock().unwrap().clone() })) })
         }),
     );
     let a = apps.clone();
@@ -1006,7 +1056,7 @@ fn v2_extensions() -> (Extensions, V2) {
         let a = a.clone();
         Box::pin(async move { Ok(a.lock().unwrap().clone()) })
     });
-    ext.state.push(("apps", provider));
+    ext.state.push(("things", provider));
     (ext, V2 { apps, calls, fail })
 }
 
@@ -1016,16 +1066,16 @@ async fn actions_that_need_an_unsupported_capability_are_refused_and_never_run()
     let env = env_with(base_config(), ext).await;
     let mut c = env.connect().await;
     c.next().await;
-    c.send(json!({"action":"setAppVolume","app":"spotify","value":10}))
+    c.send(json!({"action":"setThingVolume","app":"spotify","value":10}))
         .await;
-    c.send(json!({"action":"getApps"})).await;
+    c.send(json!({"action":"getThings"})).await;
     assert_eq!(
         c.next().await.to_string(),
-        r#"{"action":"setAppVolume","response":{"error":"Not supported on this OS"}}"#
+        r#"{"action":"setThingVolume","response":{"error":"Not supported on this OS"}}"#
     );
     assert_eq!(
         c.next().await.to_string(),
-        r#"{"action":"getApps","response":{"error":"Not supported on this OS"}}"#
+        r#"{"action":"getThings","response":{"error":"Not supported on this OS"}}"#
     );
     assert!(v2.calls.lock().unwrap().is_empty());
 }
@@ -1037,15 +1087,15 @@ async fn capability_gating_follows_the_runtime_answer_and_commands_push_the_resu
     let mut c = env.connect().await;
     c.next().await;
     env.set(|s| s.features.apps_volume = true); // e.g. the Pulse server came up
-    c.send(json!({"action":"setAppVolume","app":"spotify","value":10}))
+    c.send(json!({"action":"setThingVolume","app":"spotify","value":10}))
         .await;
     assert_eq!(
         c.next().await,
-        json!({"apps":[{"id":"spotify","name":"Spotify","volume":10,"muted":false}]})
+        json!({"things":[{"id":"spotify","name":"Spotify","volume":10,"muted":false}]})
     );
     assert_eq!(*v2.calls.lock().unwrap(), [("spotify".to_string(), 10)]);
-    c.send(json!({"action":"getApps"})).await;
-    assert_eq!(c.next().await["apps"][0]["volume"], 10);
+    c.send(json!({"action":"getThings"})).await;
+    assert_eq!(c.next().await["things"][0]["volume"], 10);
 }
 
 #[tokio::test]
@@ -1055,21 +1105,21 @@ async fn target_validation_errors_come_back_before_any_capability_or_command_wor
     env.set(|s| s.features.apps_volume = true);
     let mut c = env.connect().await;
     c.next().await;
-    c.send(json!({"action":"setAppVolume","value":10})).await;
-    c.send(json!({"action":"setAppVolume","app":"a\u{0}b","value":10}))
+    c.send(json!({"action":"setThingVolume","value":10})).await;
+    c.send(json!({"action":"setThingVolume","app":"a\u{0}b","value":10}))
         .await;
-    c.send(json!({"action":"setAppVolume","app":7,"value":10}))
+    c.send(json!({"action":"setThingVolume","app":7,"value":10}))
         .await;
-    c.send(json!({"action":"setAppVolume","app":"x".repeat(257),"value":10}))
+    c.send(json!({"action":"setThingVolume","app":"x".repeat(257),"value":10}))
         .await;
     for _ in 0..4 {
         let reply = c.next().await;
-        assert_eq!(reply["action"], "setAppVolume");
+        assert_eq!(reply["action"], "setThingVolume");
         assert!(
             reply["response"]["error"]
                 .as_str()
                 .unwrap()
-                .starts_with("Invalid app for setAppVolume."),
+                .starts_with("Invalid app for setThingVolume."),
             "{reply}"
         );
     }
@@ -1083,27 +1133,27 @@ async fn an_unknown_target_gets_its_own_error_not_failed_to_execute() {
     env.set(|s| s.features.apps_volume = true);
     let mut c = env.connect().await;
     c.next().await;
-    c.send(json!({"action":"setAppVolume","app":"nope","value":10}))
+    c.send(json!({"action":"setThingVolume","app":"nope","value":10}))
         .await;
     assert_eq!(
         c.next().await.to_string(),
-        r#"{"action":"setAppVolume","response":{"error":"App not found"}}"#
+        r#"{"action":"setThingVolume","response":{"error":"App not found"}}"#
     );
 
     *v2.fail.lock().unwrap() = Some(CommandError2::Device);
-    c.send(json!({"action":"setAppVolume","app":"spotify","value":10}))
+    c.send(json!({"action":"setThingVolume","app":"spotify","value":10}))
         .await;
     assert_eq!(
         c.next().await.to_string(),
-        r#"{"action":"setAppVolume","response":{"error":"Device not found"}}"#
+        r#"{"action":"setThingVolume","response":{"error":"Device not found"}}"#
     );
 
     *v2.fail.lock().unwrap() = Some(CommandError2::Boom);
-    c.send(json!({"action":"setAppVolume","app":"spotify","value":10}))
+    c.send(json!({"action":"setThingVolume","app":"spotify","value":10}))
         .await;
     assert_eq!(
         c.next().await.to_string(),
-        r#"{"action":"setAppVolume","response":{"error":"Failed to execute action"}}"#
+        r#"{"action":"setThingVolume","response":{"error":"Failed to execute action"}}"#
     );
     c.quiet().await; // none of these pushed state
 }
@@ -1114,7 +1164,7 @@ async fn list_valued_state_is_broadcast_only_when_its_content_changes_one_messag
     let env = env_with(base_config(), ext).await;
     let (mut a, mut b) = (env.connect().await, env.connect().await);
     let first = a.next().await;
-    assert_eq!(first["apps"], *v2.apps.lock().unwrap());
+    assert_eq!(first["things"], *v2.apps.lock().unwrap());
     b.next().await;
 
     // an equal list is not a change
@@ -1126,7 +1176,7 @@ async fn list_valued_state_is_broadcast_only_when_its_content_changes_one_messag
     // a change inside an element is
     v2.apps.lock().unwrap()[0]["volume"] = json!(55);
     env.server.refresh().await;
-    let changed = json!({"apps":[{"id":"spotify","name":"Spotify","volume":55,"muted":false}]});
+    let changed = json!({"things":[{"id":"spotify","name":"Spotify","volume":55,"muted":false}]});
     assert_eq!(a.next().await, changed);
     assert_eq!(b.next().await, changed);
 
@@ -1140,12 +1190,12 @@ async fn list_valued_state_is_broadcast_only_when_its_content_changes_one_messag
     env.set(|s| s.volume = 12);
     env.server.refresh().await;
     assert_eq!(a.next().await, json!({"volume":12}));
-    assert_eq!(a.next().await["apps"].as_array().unwrap().len(), 2);
+    assert_eq!(a.next().await["things"].as_array().unwrap().len(), 2);
 
     // an app stopping, then nothing changing
     v2.apps.lock().unwrap().as_array_mut().unwrap().remove(0);
     env.server.refresh().await;
-    assert_eq!(a.next().await["apps"][0]["id"], "discord");
+    assert_eq!(a.next().await["things"][0]["id"], "discord");
     env.server.refresh().await;
     a.quiet().await;
     assert_eq!(a.seen.len(), 5);
@@ -1159,15 +1209,15 @@ async fn lists_are_part_of_get_state_and_the_initial_state_and_late_joiners_upda
     a.next().await;
     *v2.apps.lock().unwrap() = json!([]);
     let mut b = env.connect().await;
-    assert_eq!(b.next().await["apps"], json!([]));
+    assert_eq!(b.next().await["things"], json!([]));
     assert_eq!(
-        a.until(|m| m.get("apps").is_some()).await,
-        json!({"apps":[]})
+        a.until(|m| m.get("things").is_some()).await,
+        json!({"things":[]})
     );
     b.send(json!({"action":"getState"})).await;
     assert_eq!(
         b.next().await.to_string(),
-        r#"{"volume":40,"muted":false,"outputDevice":"Speakers","apps":[]}"#
+        r#"{"volume":40,"muted":false,"outputDevice":"Speakers","things":[]}"#
     );
 }
 
@@ -1186,5 +1236,236 @@ async fn restart_forgets_what_clients_were_told() {
         panic!("no initial state")
     };
     let first: Value = serde_json::from_str(text.as_str()).unwrap();
-    assert_eq!(first["apps"][0]["id"], "spotify");
+    assert_eq!(first["things"][0]["id"], "spotify");
+}
+
+// ---- per-app audio (#16) ------------------------------------------------------------------------
+
+fn session(id: &str, name: &str, volume: u8, muted: bool) -> AppSession {
+    AppSession {
+        id: id.into(),
+        name: name.into(),
+        volume,
+        muted,
+    }
+}
+
+/// Two Chrome sessions (one muted) and Spotify, with per-app volume and mute supported.
+async fn env_apps() -> Env {
+    let env = env().await;
+    env.set(|s| {
+        s.features.apps_volume = true;
+        s.features.apps_mute = true;
+        s.sessions = Some(vec![
+            session("spotify", "Spotify", 80, false),
+            session("chrome", "Google Chrome", 30, true),
+            session("chrome", "", 70, false),
+        ]);
+    });
+    env
+}
+
+const APPS: &str = r#"[{"id":"chrome","name":"Google Chrome","volume":70,"muted":false},{"id":"spotify","name":"Spotify","volume":80,"muted":false}]"#;
+
+#[tokio::test]
+async fn app_actions_are_refused_where_unsupported_and_the_state_has_no_apps() {
+    let env = env().await;
+    let mut c = env.connect().await;
+    assert!(c.next().await.get("apps").is_none());
+    for action in [
+        json!({"action":"getApps"}),
+        json!({"action":"setAppVolume","app":"spotify","value":10}),
+        json!({"action":"increaseAppVolume","app":"spotify","value":10}),
+        json!({"action":"decreaseAppVolume","app":"spotify","value":10}),
+        json!({"action":"muteApp","app":"spotify"}),
+        json!({"action":"unmuteApp","app":"spotify"}),
+        json!({"action":"toggleAppMute","app":"spotify"}),
+    ] {
+        c.send(action.clone()).await;
+        assert_eq!(
+            c.next().await,
+            json!({"action": action["action"], "response": {"error": "Not supported on this OS"}})
+        );
+    }
+    c.send(json!({"action":"getState"})).await;
+    assert!(c.next().await.get("apps").is_none());
+    assert!(env.calls().is_empty());
+}
+
+#[tokio::test]
+async fn sessions_are_grouped_into_apps_in_every_state_snapshot() {
+    let env = env_apps().await;
+    let mut c = env.connect().await;
+    let first = c.next().await;
+    assert_eq!(first["apps"].to_string(), APPS);
+    assert_eq!(
+        first["capabilities"]["apps"],
+        json!({"volume":true,"mute":true})
+    );
+    c.send(json!({"action":"getApps"})).await;
+    assert_eq!(c.next().await.to_string(), format!(r#"{{"apps":{APPS}}}"#));
+    c.send(json!({"action":"getState"})).await;
+    assert_eq!(
+        c.next().await.to_string(),
+        format!(r#"{{"volume":40,"muted":false,"outputDevice":"Speakers","apps":{APPS}}}"#)
+    );
+}
+
+#[tokio::test]
+async fn setting_an_app_volume_reaches_every_session_and_pushes_the_list_to_everyone() {
+    let env = env_apps().await;
+    let (mut a, mut b) = (env.connect().await, env.connect().await);
+    a.next().await;
+    b.next().await;
+    a.send(json!({"action":"setAppVolume","app":"Chrome","value":50}))
+        .await;
+    let pushed = json!({"apps":[
+        {"id":"chrome","name":"Google Chrome","volume":50,"muted":false},
+        {"id":"spotify","name":"Spotify","volume":80,"muted":false},
+    ]});
+    assert_eq!(a.next().await, pushed);
+    assert_eq!(b.next().await, pushed);
+    assert_eq!(env.calls(), ["setAppVolume chrome 50"]);
+    a.quiet().await; // no reply, and the master volume did not change
+}
+
+#[tokio::test]
+async fn increase_and_decrease_start_from_the_loudest_session_and_stop_at_the_ends() {
+    let env = env_apps().await;
+    let mut c = env.connect().await;
+    c.next().await;
+    for (action, value) in [
+        ("increaseAppVolume", 40),
+        ("decreaseAppVolume", 99),
+        ("decreaseAppVolume", 5),
+        ("increaseAppVolume", 3),
+    ] {
+        c.send(json!({"action":action,"app":"chrome","value":value}))
+            .await;
+        c.until(|m| m.get("apps").is_some()).await;
+    }
+    assert_eq!(
+        env.calls(),
+        [
+            "setAppVolume chrome 100",
+            "setAppVolume chrome 1",
+            "setAppVolume chrome 0",
+            "setAppVolume chrome 3",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn mute_unmute_and_toggle_an_app() {
+    let env = env_apps().await;
+    let mut c = env.connect().await;
+    c.next().await;
+    // one Chrome session is muted, the other not: the app counts as unmuted, so toggle mutes it
+    c.send(json!({"action":"toggleAppMute","app":"chrome"}))
+        .await;
+    assert_eq!(c.next().await["apps"][0]["muted"], true);
+    c.send(json!({"action":"toggleAppMute","app":"chrome"}))
+        .await;
+    assert_eq!(c.next().await["apps"][0]["muted"], false);
+    c.send(json!({"action":"muteApp","app":"spotify.exe"}))
+        .await;
+    assert_eq!(c.next().await["apps"][1]["muted"], true);
+    c.send(json!({"action":"muteApp","app":"Spotify"})).await;
+    c.send(json!({"action":"unmuteApp","app":"spotify"})).await;
+    assert_eq!(c.next().await["apps"][1]["muted"], false);
+    assert_eq!(
+        env.calls(),
+        [
+            "setAppMuted chrome true",
+            "setAppMuted chrome false",
+            "setAppMuted spotify true",
+            "setAppMuted spotify true",
+            "setAppMuted spotify false",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_app_that_is_not_running_is_app_not_found_and_nothing_is_set() {
+    let env = env_apps().await;
+    let mut c = env.connect().await;
+    c.next().await;
+    for action in [
+        json!({"action":"setAppVolume","app":"discord","value":10}),
+        json!({"action":"increaseAppVolume","app":"spot","value":10}),
+        json!({"action":"toggleAppMute","app":"discord"}),
+    ] {
+        c.send(action.clone()).await;
+        assert_eq!(
+            c.next().await,
+            json!({"action": action["action"], "response": {"error": "App not found"}})
+        );
+    }
+    c.quiet().await;
+    assert!(env.calls().is_empty());
+    assert!(env.log.lines().iter().any(|l| l.contains("App not found")));
+}
+
+#[tokio::test]
+async fn a_failing_app_list_never_costs_the_volume_state() {
+    let env = env_apps().await;
+    env.set(|s| s.fail_apps = true);
+    let mut c = env.connect().await;
+    let first = c.next().await;
+    assert_eq!(first["volume"], 40);
+    assert!(first.get("apps").is_none());
+    c.send(json!({"action":"getApps"})).await;
+    assert_eq!(
+        c.next().await.to_string(),
+        r#"{"action":"getApps","response":{"error":"Failed to execute action"}}"#
+    );
+    c.send(json!({"action":"muteApp","app":"chrome"})).await;
+    assert_eq!(
+        c.next().await["response"]["error"],
+        "Failed to execute action"
+    );
+}
+
+#[tokio::test]
+async fn a_backend_that_says_unsupported_despite_its_capabilities_gets_not_supported() {
+    let env = env_apps().await;
+    env.set(|s| s.sessions = None);
+    let mut c = env.connect().await;
+    c.next().await;
+    c.send(json!({"action":"muteApp","app":"chrome"})).await;
+    assert_eq!(
+        c.next().await.to_string(),
+        r#"{"action":"muteApp","response":{"error":"Not supported on this OS"}}"#
+    );
+}
+
+#[tokio::test]
+async fn turning_app_tracking_off_hides_the_list_and_refuses_the_actions() {
+    let env = env_apps().await;
+    let mut c = env.connect().await;
+    assert!(c.next().await.get("apps").is_some());
+
+    let mut off = env.server.config();
+    off.apps.enabled = false;
+    let applied = env.server.apply_config(off.clone()).await.unwrap();
+    assert!(!applied.restarted);
+    assert_eq!(c.next().await, json!({"apps": null}));
+    c.send(json!({"action":"getCapabilities"})).await;
+    assert_eq!(
+        c.next().await["capabilities"]["apps"],
+        json!({"volume":false,"mute":false})
+    );
+    c.send(json!({"action":"muteApp","app":"chrome"})).await;
+    assert_eq!(
+        c.next().await["response"]["error"],
+        "Not supported on this OS"
+    );
+    let mut late = env.connect().await;
+    assert!(late.next().await.get("apps").is_none());
+    assert!(env.calls().is_empty());
+
+    let mut on = off;
+    on.apps.enabled = true;
+    env.server.apply_config(on).await.unwrap();
+    assert_eq!(c.next().await["apps"].to_string(), APPS);
 }

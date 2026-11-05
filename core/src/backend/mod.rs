@@ -21,6 +21,8 @@ pub enum ErrorCode {
     UnknownAction,
     InvalidValue,
     NoDevice,
+    /// The named app (or device) does not exist (any more).
+    NotFound,
     Unsupported,
     BackendUnavailable,
     Internal,
@@ -35,6 +37,7 @@ impl ErrorCode {
             ErrorCode::UnknownAction => "unknown_action",
             ErrorCode::InvalidValue => "invalid_value",
             ErrorCode::NoDevice => "no_device",
+            ErrorCode::NotFound => "not_found",
             ErrorCode::Unsupported => "unsupported",
             ErrorCode::BackendUnavailable => "backend_unavailable",
             ErrorCode::Internal => "internal",
@@ -73,6 +76,19 @@ pub struct Device {
     pub default: bool,
 }
 
+/// One audio session (Windows) or stream (Pulse sink-input) of an app. Backends report every
+/// session as it is; [`crate::apps::group`] merges the sessions of one app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppSession {
+    /// The app id, from [`crate::apps::app_id`]: the lowercased executable name without `.exe`.
+    pub id: String,
+    /// Display name; may be empty when the OS has none.
+    pub name: String,
+    /// Integer percent, 0-100, relative to the master volume.
+    pub volume: u8,
+    pub muted: bool,
+}
+
 /// What the backend can do right now. `volume` and `mute` describe the default output device when
 /// there is one, otherwise what the OS API supports in general.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,7 +115,7 @@ impl Capabilities {
 }
 
 /// Features of the WebSocket protocol v2 (per-app audio, device selection) that this machine
-/// supports right now. Nothing is wired up to the protocol yet, so every backend reports none.
+/// supports right now. No platform backend implements them yet, so every backend reports none.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Features {
     pub devices_list: bool,
@@ -124,6 +140,25 @@ pub trait Backend {
     fn features(&mut self) -> Features {
         Features::default()
     }
+    /// Every audio session of every app, on every active output device. Default: unsupported.
+    fn list_app_sessions(&mut self) -> AudioResult<Vec<AppSession>> {
+        Err(unsupported_apps())
+    }
+    /// Set the volume of every session whose `id` matches; `NotFound` when there is none.
+    fn set_app_volume(&mut self, _id: &str, _percent: u8) -> AudioResult<()> {
+        Err(unsupported_apps())
+    }
+    /// Mute or unmute every session whose `id` matches; `NotFound` when there is none.
+    fn set_app_muted(&mut self, _id: &str, _muted: bool) -> AudioResult<()> {
+        Err(unsupported_apps())
+    }
+}
+
+fn unsupported_apps() -> AudioError {
+    AudioError::new(
+        ErrorCode::Unsupported,
+        "per-app audio is not supported on this OS",
+    )
 }
 
 /// The backend for the OS this binary was built for.
