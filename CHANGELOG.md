@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.4.0](https://github.com/justereseau/companion-remote-volume/compare/v1.3.0...v1.4.0) (2026-11-05)
+
+
+### Features
+
+* **core:** credit the upstream as UTS on the settings page ([b7b599c](https://github.com/justereseau/companion-remote-volume/commit/b7b599cb03e76674c69da3e48dc6fc81a920a9b6))
+* **core:** group the settings page into sections ([d2c2306](https://github.com/justereseau/companion-remote-volume/commit/d2c2306f78e4adb5e68c6d85489b441a60edb053))
+* **core:** per-app volume and mute in the WebSocket protocol ([d8f9a34](https://github.com/justereseau/companion-remote-volume/commit/d8f9a3482d4a7d156b25ff3ceb7d4765a535b7de))
+* **core:** per-app volume and mute in the WebSocket protocol ([8d60277](https://github.com/justereseau/companion-remote-volume/commit/8d60277d51e289ca8ac5468d3cad538babd0aa0a)), closes [#16](https://github.com/justereseau/companion-remote-volume/issues/16)
+* **core:** show version and credits on the settings page ([d7f4ca7](https://github.com/justereseau/companion-remote-volume/commit/d7f4ca774e6779e7e339af66f064d696a307b65f))
+* **core:** show version and credits on the settings page ([fc50993](https://github.com/justereseau/companion-remote-volume/commit/fc509932cf0894e7dd37d9a47e1e18acfa339f45))
+
+
+### Bug Fixes
+
+* **deps:** update non-major dependencies ([e0d40a3](https://github.com/justereseau/companion-remote-volume/commit/e0d40a3a217b4b9561d216b22e4549e83a05637b))
+* **deps:** update non-major dependencies ([2b3e13a](https://github.com/justereseau/companion-remote-volume/commit/2b3e13a88cc07ba9d97d0cbdb42493a17710e3d9))
+* **deps:** update rust crate libpulse-binding to 2.30.1 ([a4b4dd4](https://github.com/justereseau/companion-remote-volume/commit/a4b4dd44451193855749eb881762680e948a429b))
+* **deps:** update rust crate libpulse-binding to 2.30.1 ([da1ce8c](https://github.com/justereseau/companion-remote-volume/commit/da1ce8c8beb1caf18c38f15e8b1a111acb461754))
+* **deps:** update rust crate serde_json to 1.0.154 ([b1039c5](https://github.com/justereseau/companion-remote-volume/commit/b1039c5f1207a331b6ab126193aaddcf40d9e0d4))
+* **deps:** update rust crate serde_json to 1.0.154 ([6827d29](https://github.com/justereseau/companion-remote-volume/commit/6827d292c12349bef0442d1db42343776346891e))
+* **deps:** update rust crate tokio to 1.54.1 ([e172516](https://github.com/justereseau/companion-remote-volume/commit/e17251680c8d63a13c6f3bacfa795dd7fb2b35b3))
+* **deps:** update rust crate tokio to 1.54.1 ([3980d46](https://github.com/justereseau/companion-remote-volume/commit/3980d464b2373823eb652b3287bfa8a2512dae9d))
+
 ## [1.3.0](https://github.com/justereseau/companion-remote-volume/compare/v1.2.0...v1.3.0) (2026-11-05)
 
 
