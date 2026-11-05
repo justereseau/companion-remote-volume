@@ -7,7 +7,7 @@ A small native app that lets you control the OS audio volume over a WebSocket co
 - Get, set, increase or decrease the audio volume
 - Get, mute, unmute or toggle the mute state of the audio volume
 - Get the current audio output device
-- Per-app volume and mute ([protocol v2](#protocol-v2)): the protocol is in place, the Linux and Windows backends are in progress, so no OS reports it as supported yet
+- Per-app volume and mute ([protocol v2](#protocol-v2)) on Windows; Linux is in progress
 
 Connected clients are kept in sync automatically:
 
@@ -248,7 +248,7 @@ Like the v1 commands, the changing actions send no reply: the new `apps` list is
 | OS | Volume | Mute | Status |
 |---|---|---|---|
 | Linux, PulseAudio / PipeWire | yes | yes | in progress ([#18](https://github.com/Justereseau/companion-remote-volume/issues/18)) |
-| Windows | yes | yes | in progress ([#17](https://github.com/Justereseau/companion-remote-volume/issues/17)) |
+| Windows | yes | yes | supported. Changes made in the Windows mixer are picked up by polling |
 | macOS | no | maybe on 14.2+ | being investigated ([#19](https://github.com/Justereseau/companion-remote-volume/issues/19)) |
 | Linux, ALSA only | no | no | not possible |
 
