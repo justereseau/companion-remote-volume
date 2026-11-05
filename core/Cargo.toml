@@ -25,7 +25,7 @@ path = "src/bin/remote-volume.rs"
 futures-util = "0.3.34"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
-sha2 = "0.10.9"
+sha2 = "0.11.1"
 tiny_http = "0.12.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "signal"] }
 tokio-tungstenite = "0.29.0"
