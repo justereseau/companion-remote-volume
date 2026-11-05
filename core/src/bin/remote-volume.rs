@@ -4,71 +4,15 @@
 //! serves a settings page on `http://127.0.0.1:<settings port>/`.
 
 use std::env;
-use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 use std::sync::Arc;
 
 use remote_volume_core::audio::AudioHandle;
+use remote_volume_core::cli::{parse_args, Command as Cli, Options, HELP};
 use remote_volume_core::config::{config_dir, legacy_candidates, Loaded, Store};
 use remote_volume_core::log::{Log, StderrLog};
 use remote_volume_core::server::Server;
 use remote_volume_core::settings::{SettingsApp, SettingsHttp};
-
-const DEFAULT_SETTINGS_PORT: u16 = 2502;
-
-const HELP: &str = "\
-remote-volume - control the system volume from Bitfocus Companion over a WebSocket
-
-Usage: remote-volume [options]
-
-Options:
-  --settings-port <port>  Port of the settings page on 127.0.0.1 (default 2502, env RV_SETTINGS_PORT)
-  --config-dir <dir>      Where config.json is kept (env RV_CONFIG_DIR)
-  --open                  Open the settings page in the default browser
-  -h, --help              Show this help
-  -V, --version           Show the version
-";
-
-struct Options {
-    settings_port: u16,
-    config_dir: PathBuf,
-    open: bool,
-}
-
-fn parse_args() -> Result<Option<Options>, String> {
-    let mut options = Options {
-        settings_port: env::var("RV_SETTINGS_PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(DEFAULT_SETTINGS_PORT),
-        config_dir: config_dir(),
-        open: false,
-    };
-    let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                print!("{HELP}");
-                return Ok(None);
-            }
-            "-V" | "--version" => {
-                println!("remote-volume {}", env!("CARGO_PKG_VERSION"));
-                return Ok(None);
-            }
-            "--open" => options.open = true,
-            "--settings-port" => {
-                let value = args.next().ok_or("--settings-port needs a value")?;
-                options.settings_port =
-                    value.parse().map_err(|_| format!("not a port: {value}"))?;
-            }
-            "--config-dir" => {
-                options.config_dir = args.next().ok_or("--config-dir needs a value")?.into()
-            }
-            other => return Err(format!("unknown option: {other}")),
-        }
-    }
-    Ok(Some(options))
-}
 
 fn open_in_browser(url: &str) {
     let result = if cfg!(windows) {
@@ -84,9 +28,21 @@ fn open_in_browser(url: &str) {
 }
 
 fn main() -> ExitCode {
-    let options = match parse_args() {
-        Ok(Some(options)) => options,
-        Ok(None) => return ExitCode::SUCCESS,
+    let parsed = parse_args(
+        env::args().skip(1),
+        env::var("RV_SETTINGS_PORT").ok().as_deref(),
+        config_dir(),
+    );
+    let options = match parsed {
+        Ok(Cli::Run(options)) => options,
+        Ok(Cli::Help) => {
+            print!("{HELP}");
+            return ExitCode::SUCCESS;
+        }
+        Ok(Cli::Version) => {
+            println!("remote-volume {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
         Err(message) => {
             eprintln!("remote-volume: {message}\n\n{HELP}");
             return ExitCode::from(2);
