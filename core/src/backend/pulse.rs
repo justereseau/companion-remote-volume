@@ -3,6 +3,9 @@
 //! When no server answers, every capability is reported false and commands fail with
 //! `backend_unavailable` instead of falling back to ALSA.
 //!
+//! Per-app audio: every playback stream (sink-input) belongs to the app named by its
+//! `application.process.binary` property, or its `application.name` when there is none.
+//!
 //! Spike simplification: each call opens a fresh connection (a few ms). The persistent
 //! connection with change subscriptions comes with the events work.
 
@@ -13,9 +16,13 @@ use libpulse_binding::callbacks::ListResult;
 use libpulse_binding::context::{Context, FlagSet, State};
 use libpulse_binding::mainloop::standard::{IterateResult, Mainloop};
 use libpulse_binding::operation::{Operation, State as OpState};
+use libpulse_binding::proplist::properties::{APPLICATION_NAME, APPLICATION_PROCESS_BINARY};
 use libpulse_binding::volume::{ChannelVolumes, Volume};
 
-use super::{AudioError, AudioResult, Backend, Capabilities, Device, ErrorCode};
+use super::{
+    AppSession, AudioError, AudioResult, Backend, Capabilities, Device, ErrorCode, Features,
+};
+use crate::apps::app_id;
 
 /// PulseAudio's 100% (`PA_VOLUME_NORM`), the scale `pactl` and pavucontrol show.
 const NORM: u64 = 0x10000;
@@ -38,6 +45,41 @@ struct Sink {
     description: String,
     volume: ChannelVolumes,
     mute: bool,
+}
+
+/// One playback stream (sink-input) of an app.
+struct Stream {
+    index: u32,
+    id: String,
+    name: String,
+    volume: ChannelVolumes,
+    mute: bool,
+}
+
+impl Stream {
+    /// With several channels the loudest one is reported (a balance is not a lower volume).
+    fn report(&self) -> AppSession {
+        AppSession {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            volume: raw_to_percent(self.volume.max().0),
+            muted: self.mute,
+        }
+    }
+}
+
+/// The app id and display name of a stream: the id from the process binary, or from the
+/// application name when the stream has no binary (some sandboxed or network clients); the name
+/// from the application name, or the binary. `None` when the stream has neither.
+fn stream_app(binary: Option<&str>, application: Option<&str>) -> Option<(String, String)> {
+    let binary = binary.map(str::trim).filter(|b| !b.is_empty());
+    let application = application.map(str::trim).filter(|a| !a.is_empty());
+    let id = app_id(binary.or(application)?);
+    if id.is_empty() {
+        return None;
+    }
+    let name = application.or(binary)?.to_string();
+    Some((id, name))
 }
 
 /// A connected context. Field order matters: the context must drop before its main loop.
@@ -130,6 +172,80 @@ impl Conn {
         }
         let list = std::mem::take(&mut *out.borrow_mut());
         Ok(list)
+    }
+
+    /// Every playback stream that has a volume and belongs to an app, on every sink.
+    fn streams(&mut self) -> AudioResult<Vec<Stream>> {
+        let out = Rc::new(RefCell::new(Vec::<Stream>::new()));
+        let failed = Rc::new(Cell::new(false));
+        let (streams, err) = (out.clone(), failed.clone());
+        let op = self
+            .context
+            .introspect()
+            .get_sink_input_info_list(move |result| match result {
+                ListResult::Item(info) => {
+                    // Passthrough streams (e.g. AC3 to a receiver) have no volume to set.
+                    if !info.has_volume {
+                        return;
+                    }
+                    let props = &info.proplist;
+                    let Some((id, name)) = stream_app(
+                        props.get_str(APPLICATION_PROCESS_BINARY).as_deref(),
+                        props.get_str(APPLICATION_NAME).as_deref(),
+                    ) else {
+                        return;
+                    };
+                    streams.borrow_mut().push(Stream {
+                        index: info.index,
+                        id,
+                        name,
+                        volume: info.volume,
+                        mute: info.mute,
+                    });
+                }
+                ListResult::End => {}
+                ListResult::Error => err.set(true),
+            });
+        self.wait(op)?;
+        if failed.get() {
+            return Err(internal("PulseAudio failed to list the playback streams"));
+        }
+        let list = std::mem::take(&mut *out.borrow_mut());
+        Ok(list)
+    }
+
+    /// Applies `change` to every stream of the app `id` (indexes do not last, so they are looked
+    /// up again on every command): `not_found` when the app has no stream, an error only when
+    /// every change failed (a stream can end between listing and changing it).
+    fn change_app(
+        &mut self,
+        id: &str,
+        change: impl Fn(&Context, &Stream, Box<dyn FnMut(bool)>) -> Operation<dyn FnMut(bool)>,
+    ) -> AudioResult<()> {
+        let streams: Vec<Stream> = self.streams()?.into_iter().filter(|s| s.id == id).collect();
+        if streams.is_empty() {
+            return Err(AudioError::new(
+                ErrorCode::NotFound,
+                format!("no playback stream for app {id}"),
+            ));
+        }
+        let mut changed = false;
+        for stream in &streams {
+            let accepted = Rc::new(Cell::new(false));
+            let flag = accepted.clone();
+            let op = change(
+                &self.context,
+                stream,
+                Box::new(move |success| flag.set(success)),
+            );
+            self.wait(op)?;
+            changed |= accepted.get();
+        }
+        if changed {
+            Ok(())
+        } else {
+            Err(internal("PulseAudio refused the change"))
+        }
     }
 
     /// The default sink, or `no_device` when there is none.
@@ -239,6 +355,45 @@ impl Backend for Pulse {
         conn.confirm(accepted, op)?;
         Ok(conn.default_sink()?.mute)
     }
+
+    fn features(&mut self) -> Features {
+        // Streams exist on any Pulse server, even with no sink (the list is then empty).
+        let available = self.connect().is_ok();
+        Features {
+            apps_volume: available,
+            apps_mute: available,
+            ..Features::default()
+        }
+    }
+
+    fn list_app_sessions(&mut self) -> AudioResult<Vec<AppSession>> {
+        Ok(self
+            .connect()?
+            .streams()?
+            .iter()
+            .map(Stream::report)
+            .collect())
+    }
+
+    fn set_app_volume(&mut self, id: &str, percent: u8) -> AudioResult<()> {
+        let level = Volume(percent_to_raw(percent));
+        self.connect()?.change_app(id, |context, stream, done| {
+            // Every channel gets the same value, so a set also resets the balance.
+            let mut volume = stream.volume;
+            volume.set(volume.len(), level);
+            context
+                .introspect()
+                .set_sink_input_volume(stream.index, &volume, Some(done))
+        })
+    }
+
+    fn set_app_muted(&mut self, id: &str, muted: bool) -> AudioResult<()> {
+        self.connect()?.change_app(id, |context, stream, done| {
+            context
+                .introspect()
+                .set_sink_input_mute(stream.index, muted, Some(done))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -261,5 +416,86 @@ mod tests {
     #[test]
     fn boost_is_clamped_to_100() {
         assert_eq!(raw_to_percent(0x18000), 100);
+    }
+
+    #[test]
+    fn a_stream_is_named_after_its_binary_and_application() {
+        let app = |b, a| stream_app(b, a);
+        assert_eq!(
+            app(Some("firefox"), Some("Firefox")),
+            Some(("firefox".into(), "Firefox".into()))
+        );
+        // No binary (sandboxed or network clients): the application name gives the id too.
+        assert_eq!(
+            app(None, Some("Spotify")),
+            Some(("spotify".into(), "Spotify".into()))
+        );
+        assert_eq!(
+            app(Some("/usr/bin/mpv"), Some(" ")),
+            Some(("mpv".into(), "/usr/bin/mpv".into()))
+        );
+        assert_eq!(app(Some(""), None), None);
+        assert_eq!(app(None, None), None);
+    }
+
+    /// Plays silence with `pacat` on the default sink (CI: a null sink) and drives its stream.
+    #[test]
+    fn app_streams_can_be_listed_and_changed() {
+        if std::env::var("RV_INTEGRATION")
+            .unwrap_or_default()
+            .is_empty()
+        {
+            eprintln!("skipped: set RV_INTEGRATION to play a stream with pacat");
+            return;
+        }
+        struct Player(std::process::Child);
+        impl Drop for Player {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let _player = Player(
+            std::process::Command::new("pacat")
+                .args(["--property=application.name=RV Test", "/dev/zero"])
+                .spawn()
+                .expect("pacat (pulseaudio-utils) plays a test stream"),
+        );
+
+        let mut backend = Pulse::new();
+        let find = |backend: &mut Pulse| {
+            backend
+                .list_app_sessions()
+                .expect("listing playback streams")
+                .into_iter()
+                .find(|s| s.id == "pacat")
+        };
+        let start = std::time::Instant::now();
+        let stream = loop {
+            if let Some(stream) = find(&mut backend) {
+                break stream;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "the pacat stream never appeared"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        assert_eq!(stream.name, "RV Test");
+
+        let features = backend.features();
+        assert!(features.apps_volume && features.apps_mute);
+
+        backend.set_app_volume("pacat", 37).expect("set volume");
+        assert_eq!(find(&mut backend).unwrap().volume, 37);
+        backend.set_app_muted("pacat", true).expect("mute");
+        assert!(find(&mut backend).unwrap().muted);
+        backend.set_app_muted("pacat", false).expect("unmute");
+        assert!(!find(&mut backend).unwrap().muted);
+
+        let missing = backend
+            .set_app_muted("no-such-app-rv-test", true)
+            .unwrap_err();
+        assert_eq!(missing.code, ErrorCode::NotFound);
     }
 }
