@@ -133,7 +133,7 @@ pub async fn handle_request(app: &SettingsApp, req: &Req, port: u16) -> Resp {
         ("GET" | "HEAD", "/" | "/index.html") => Resp {
             status: 200,
             content_type: "text/html; charset=utf-8",
-            body: PAGE.to_string(),
+            body: PAGE.replace("{{VERSION}}", crate::VERSION),
         },
         ("GET" | "HEAD", "/settings.js") => Resp {
             status: 200,

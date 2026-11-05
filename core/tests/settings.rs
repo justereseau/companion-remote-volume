@@ -187,6 +187,11 @@ async fn serves_the_page_and_its_script_with_hardening_headers() {
     assert!(index.body.contains("<title>Remote Volume</title>"));
     assert!(index
         .body
+        .contains(&format!("Version {}", remote_volume_core::VERSION)));
+    assert!(!index.body.contains("{{VERSION}}"));
+    assert!(index.body.contains("Developed by JusteReseau"));
+    assert!(index
+        .body
         .contains(r#"<script src="settings.js"></script>"#));
     let csp = index.header("content-security-policy").unwrap();
     assert!(

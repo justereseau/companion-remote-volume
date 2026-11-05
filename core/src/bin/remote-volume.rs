@@ -13,6 +13,7 @@ use remote_volume_core::config::{config_dir, legacy_candidates, Loaded, Store};
 use remote_volume_core::log::{Log, StderrLog};
 use remote_volume_core::server::Server;
 use remote_volume_core::settings::{SettingsApp, SettingsHttp};
+use remote_volume_core::VERSION;
 
 fn open_in_browser(url: &str) {
     let result = if cfg!(windows) {
@@ -40,7 +41,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Ok(Cli::Version) => {
-            println!("remote-volume {}", env!("CARGO_PKG_VERSION"));
+            println!("remote-volume {}", VERSION);
             return ExitCode::SUCCESS;
         }
         Err(message) => {
@@ -59,10 +60,7 @@ fn main() -> ExitCode {
 
 fn run(options: Options) -> Result<(), String> {
     let log: Arc<dyn Log> = Arc::new(StderrLog);
-    log.info(&format!(
-        "Remote Volume {} is starting...",
-        env!("CARGO_PKG_VERSION")
-    ));
+    log.info(&format!("Remote Volume {} is starting...", VERSION));
 
     let store = Store::new(&options.config_dir);
     let (config, loaded) = store.load(&legacy_candidates());
