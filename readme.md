@@ -1,6 +1,6 @@
 # Remote Volume
 
-This small Electron application enables you to control the OS audio volume over a WebSocket connection.
+A small native app that lets you control the OS audio volume over a WebSocket connection. It is a single Rust binary for Windows, macOS and Linux, with a settings page served on your own computer. It is a fork of [ultimategmbh/remote-volume](https://github.com/ultimategmbh/remote-volume).
 
 ## Features
 
@@ -18,31 +18,26 @@ Updates contain only the fields that changed, one message per field, for example
 
 ## Supported OS
 
-- Windows Vista or later
-- OSX on Arm & x64
-- Linux\*
-
-\*No autostart possible by the software setting - needs to be solved manually!
+- Windows (WASAPI)
+- macOS on Arm (CoreAudio)
+- Linux with PulseAudio or PipeWire (`pipewire-pulse`); the `libpulse0` package must be installed
 
 ## Installation
 
-Navigate to the [latest release](https://github.com/leonreucher/remote-volume/releases/latest) and download the corresponding file for your OS. Mac OS users will find a .dmg volume, containing the application. Windows users will find a .exe file which contains an installer.
-Linux users will find a .deb file for installation.
+Download the archive for your OS from the [latest release](https://github.com/justereseau/companion-remote-volume/releases/latest), unpack it and run `remote-volume`. There is no installer and no tray icon: the app runs in a terminal window until you stop it with Ctrl+C. To start it with your computer, use your OS's own mechanism (Task Scheduler on Windows, a `launchd` agent on macOS, a `systemd` user service on Linux).
+
+macOS: the binary is not signed. If Gatekeeper blocks it, run `xattr -d com.apple.quarantine remote-volume` once.
 
 ## Setup
 
-After installing the application, it will run as a menu bar application. By clicking on the menu bar item, you can either close the application or open the configuration screen.
+Open the settings page at `http://127.0.0.1:2502/` (start the app with `--open` to open it in your browser). There you can
 
-Inside the configuration screen, you can
-
-- select the port, on which clients can connect to the WebSocket server.
-- enable or disable polling for changes made outside the app, and set the polling interval.
-- select, wether the application should auto start together with the system.
-
+- select the port on which clients can connect to the WebSocket server (default `2501`).
 - choose whether clients may connect from the network or only from this computer.
-- set an optional access token.
+- set an optional access token and the allowed browser origins.
+- enable or disable polling for changes made outside the app, and set the polling interval.
 
-![Setting Window](/docs/images/setting_window.png)
+The settings are saved in `config.json` in `%APPDATA%\RemoteVolume`, `~/Library/Application Support/RemoteVolume` or `~/.config/RemoteVolume` (`--config-dir` or `RV_CONFIG_DIR` change it). On the first start the settings of the old Electron app are imported if they are found. Run `remote-volume --help` for all options.
 
 ## Security
 
@@ -50,30 +45,32 @@ Anyone who can reach the WebSocket port can change your volume. To limit that:
 
 - **Accept connections from: This computer only.** Binds the server to `127.0.0.1`. Use it when the controller (e.g. Companion) runs on the same machine.
 - **Access token.** When set, clients must connect with `ws://<host>:<port>/?token=<token>` or send an `Authorization: Bearer <token>` header. Otherwise the connection is refused with HTTP 401.
-- **Browser pages are rejected.** Connections carrying an `Origin` header (that is, from a web page) are refused with HTTP 403. This stops any website you visit from controlling your volume through `ws://localhost:2501`. Native clients such as Companion send no `Origin` and are unaffected. To allow a specific web UI, add its origin to `settings.websocket.allowedOrigins` in the config file (`config.json` in the app's user-data folder).
+- **Browser pages are rejected.** Connections carrying an `Origin` header (that is, from a web page) are refused with HTTP 403. This stops any website you visit from controlling your volume through `ws://localhost:2501`. Native clients such as Companion send no `Origin` and are unaffected. To allow a specific web UI, add its origin in the settings page.
 - Messages are limited to 1 KB, 20 commands/second per client and 32 simultaneous clients.
+- The settings page can change the access token, so it listens on `127.0.0.1` only and accepts changes only from its own page. Anyone who can use your computer can still open it.
 
 ## Building from source
 
-Requirements: Node.js 24+, and on Windows the "Desktop development with C++" workload of the Visual Studio Build Tools (for the native `naudiodon` module).
+Requirements: [rustup](https://rustup.rs). On Windows the "Desktop development with C++" workload of the Visual Studio Build Tools, on macOS the Xcode command line tools, on Linux `libpulse-dev` and `pkg-config`.
 
 ```sh
-npm ci
-npm test
-npm start          # run in development
-npm run build:win  # create dist/Remote Volume Setup <version>.exe
+cd core
+cargo run --release --bin remote-volume -- --open
+cargo test
 ```
+
+More about the crate, its tests and the optional self-hosted Mac runner is in [core/README.md](core/README.md).
 
 ## Releasing
 
 Releases are managed by [release-please](https://github.com/googleapis/release-please) from [Conventional Commits](https://www.conventionalcommits.org/):
 
-- Write PR titles and commit messages as `fix: …` (patch), `feat: …` (minor) or `feat!: …` / a `BREAKING CHANGE:` footer (major). `chore:`, `ci:`, `docs:`, `test:` and `refactor:` don't trigger a release. The **Conventional commits** check enforces this on PRs. Renovate already writes `fix(deps): …` for anything that ships in the app, including Electron.
-- On every push to `main`, release-please updates a **release PR** (`chore(main): release x.y.z`) that bumps `package.json`/`package-lock.json` and updates `CHANGELOG.md`.
+- Write PR titles and commit messages as `fix: …` (patch), `feat: …` (minor) or `feat!: …` / a `BREAKING CHANGE:` footer (major). `chore:`, `ci:`, `docs:`, `test:` and `refactor:` don't trigger a release. The **Conventional commits** check enforces this on PRs. Renovate writes `fix(deps): …` for dependency updates.
+- On every push to `main`, release-please updates a **release PR** (`chore(main): release x.y.z`) that bumps `version.txt`, `core/Cargo.toml` and `core/Cargo.lock` and updates `CHANGELOG.md`.
 - **To release:**
   1. Open the release PR. It is created with the built-in token, so CI does not start by itself. Go to **Actions → CI → Run workflow**, pick the `release-please--branches--main--components--remote-volume` branch and run it. This produces the required checks.
-  2. Merge the release PR. The CI run on `main` creates the `vX.Y.Z` tag and GitHub release, then attaches the Windows/macOS/Linux installers and `SHA256SUMS.txt` built in that same run.
-- If attaching the installers ever fails, run **Actions → CI → Run workflow** from the tag (e.g. `v1.2.0`) with `release_tag` set to it.
+  2. Merge the release PR. The CI run on `main` creates the `vX.Y.Z` tag and GitHub release, then attaches the Windows/macOS/Linux archives and `SHA256SUMS.txt` built in that same run.
+- If attaching the archives ever fails, run **Actions → CI → Run workflow** from the tag (e.g. `v1.4.0`) with `release_tag` set to it.
 
 ## Usage
 
@@ -176,8 +173,7 @@ When using [Bitfocus Companion](https://bitfocus.io/companion) you don't need th
 
 ## Credits
 
-The main part for controlling the system volume is based on the following project:
-https://github.com/LinusU/node-loudness.
+Based on [remote-volume](https://github.com/ultimategmbh/remote-volume) by Ultimate Technology Solutions GmbH, whose first versions used [node-loudness](https://github.com/LinusU/node-loudness).
 
 This application can be controlled by [Bitfocus Companion](https://bitfocus.io/companion)
 

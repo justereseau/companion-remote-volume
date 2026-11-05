@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Re-attach installers to an existing release (e.g. v1.2.0). Run from that tag. Leave empty for a normal CI run.'
+        description: 'Re-attach binaries to an existing release (e.g. v1.2.0). Run from that tag. Leave empty for a normal CI run.'
         required: false
         default: ''
 
@@ -21,28 +21,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
-    name: Unit tests (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-
-      # Install scripts (native builds) are not needed for unit tests.
-      - run: npm ci --ignore-scripts
-      - name: Unit tests with coverage thresholds
-        run: npm run test:coverage
-
   audit:
     name: Audit dependencies
     runs-on: ubuntu-latest
@@ -50,63 +28,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
-      - name: Verify registry signatures
-        run: npm audit signatures
-
-  integration:
-    name: Real audio backend (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci --ignore-scripts
-
-      # Runners have no sound card: give Linux a virtual one (PulseAudio null sink behind ALSA).
-      - name: Virtual sound card (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends pulseaudio pulseaudio-utils alsa-utils libasound2-plugins
-          pulseaudio --start --exit-idle-time=-1
-          pactl load-module module-null-sink sink_name=ci_sink
-          pactl set-default-sink ci_sink
-          # Route ALSA's default device through PulseAudio (there is no hardware card 0).
-          printf 'pcm.!default { type pulse }\nctl.!default { type pulse }\n' > ~/.asoundrc
-          amixer
-
-      - name: Audio devices (diagnostics)
-        if: runner.os != 'Linux'
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            osascript -e 'get volume settings' || true
-          else
-            powershell -NoProfile -Command "Get-Service Audiosrv | Format-List Name,Status; Get-CimInstance Win32_SoundDevice | Format-Table Name,Status" || true
-            ./impl/windows/adjust_get_current_system_volume_vista_plus.exe || true
-          fi
-
-      # Hosted Windows runners have no audio endpoint (helper reports 0x80070490). There we verify
-      # that the bundled helper executes and that the missing device is reported clearly.
-      - name: Integration tests against the OS audio stack
-        env:
-          RV_INTEGRATION: ${{ runner.os == 'Windows' && 'no-device' || '1' }}
-        run: npm run test:integration
+          tool: cargo-audit
+      - name: Audit Cargo.lock against the RustSec advisory database
+        working-directory: core
+        run: cargo audit
 
   # The matrix is built at run time so an optional self-hosted Mac (real audio hardware) can be
   # switched on with the repository variable SELF_HOSTED_MACOS=true, without editing this file.
@@ -265,65 +192,58 @@ jobs:
             exit 1
           fi
 
+  # Release binaries for each OS, packed as one archive each. The publish job attaches them to the release.
   build:
     name: Build (${{ matrix.os }})
-    needs: [test, audit]
+    needs: [core]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
-    env:
-      HAS_APPLE_CERT: ${{ secrets.APPLE_SIGNING_CERTIFICATE_BASE64 != '' }}
+        include:
+          - { os: windows-latest, target: windows-x64, exe: .exe, archive: zip }
+          - { os: macos-latest, target: macos-arm64, exe: '', archive: tar.gz }
+          - { os: ubuntu-latest, target: linux-x64, exe: '', archive: tar.gz }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-
-      - run: npm ci
-
-      - name: Install Apple codesigning certificate
-        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
-        env:
-          BUILD_CERTIFICATE_BASE64: ${{ secrets.APPLE_SIGNING_CERTIFICATE_BASE64 }}
-          P12_PASSWORD: ${{ secrets.APPLE_SIGNING_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      - name: libpulse (Linux)
+        if: runner.os == 'Linux'
         run: |
-          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERTIFICATE_PATH"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERTIFICATE_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
-          rm -f "$CERTIFICATE_PATH"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libpulse-dev
 
-      - name: Build (macOS)
-        if: runner.os == 'macOS'
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ env.HAS_APPLE_CERT }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npm run build
+      - name: Rust toolchain
+        working-directory: core
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: core
 
       - name: Build
-        if: runner.os != 'macOS'
-        run: npm run build
+        working-directory: core
+        run: cargo build --release --locked --bin remote-volume
+
+      - name: Package
+        shell: bash
+        env:
+          NAME: remote-volume-${{ matrix.target }}
+        run: |
+          mkdir "$NAME"
+          cp "core/target/release/remote-volume${{ matrix.exe }}" LICENSE readme.md "$NAME"/
+          if [ "${{ matrix.archive }}" = zip ]; then
+            7z a "$NAME.zip" "$NAME"
+          else
+            tar czf "$NAME.tar.gz" "$NAME"
+          fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: build-${{ runner.os }}
-          path: |
-            dist/*.dmg
-            dist/*.exe
-            dist/*.deb
+          name: build-${{ matrix.target }}
+          path: remote-volume-${{ matrix.target }}.${{ matrix.archive }}
           if-no-files-found: error
           retention-days: 30
 
@@ -351,11 +271,11 @@ jobs:
           manifest-file: .release-please-manifest.json
 
   publish:
-    name: Attach installers to release
-    needs: [release-please, build, integration]
+    name: Attach binaries to release
+    needs: [release-please, build, core]
     # always(): release-please is skipped on manual runs, which must not skip this job.
     if: >-
-      always() && needs.build.result == 'success' && needs.integration.result == 'success' &&
+      always() && needs.build.result == 'success' && needs.core.result == 'success' &&
       (needs.release-please.outputs.release_created == 'true' ||
        (github.event_name == 'workflow_dispatch' && inputs.release_tag != ''))
     runs-on: ubuntu-latest
@@ -368,7 +288,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ needs.release-please.outputs.tag_name || inputs.release_tag }}
     steps:
-      # Installers must come from exactly the tagged commit.
+      # Binaries must come from exactly the tagged commit.
       - name: Check that this run built the tagged commit
         run: |
           tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
