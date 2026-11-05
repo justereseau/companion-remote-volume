@@ -24,12 +24,17 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows::Win32::UI::Shell::SHLoadIndirectString;
 
 use super::{
     AppSession, AudioError, AudioResult, Backend, Capabilities, Device, ErrorCode, Features,
 };
 use crate::apps::app_id;
 use crate::volume::{percent_to_scalar, scalar_to_percent};
+
+/// The app id and fallback name of the system sounds session (notifications, alerts).
+const SYSTEM_SOUNDS_ID: &str = "system";
+const SYSTEM_SOUNDS_NAME: &str = "System Sounds";
 
 /// Passed with every session change we make, so session events can tell our changes from others.
 const EVENT_CONTEXT: GUID = GUID::from_u128(0x5f1e_8c2a_7b4d_4e61_9a03_2c6d_8e4f_1b70);
@@ -108,9 +113,19 @@ impl Wasapi {
             return None;
         }
         let control: IAudioSessionControl2 = control.cast().ok()?;
-        // S_OK means "this is the system sounds session"; S_FALSE means it is not.
+        // S_OK means "this is the system sounds session"; S_FALSE means it is not. It belongs to
+        // no single process, so it gets a fixed id and the name the Windows mixer shows.
         if control.IsSystemSoundsSession() == HRESULT(0) {
-            return None;
+            let volume: ISimpleAudioVolume = control.cast().ok()?;
+            let name = pick_name(
+                session_display_name(&control).as_deref(),
+                SYSTEM_SOUNDS_NAME,
+            );
+            return Some(Session {
+                id: SYSTEM_SOUNDS_ID.into(),
+                name,
+                volume,
+            });
         }
         let pid = control.GetProcessId().ok()?;
         if pid == 0 {
@@ -195,8 +210,9 @@ unsafe fn process_image(pid: u32) -> Option<String> {
     Some(String::from_utf16_lossy(&buffer[..size as usize]))
 }
 
-/// The session's own display name. Many apps leave it empty; some set an indirect resource
-/// string (`@%SystemRoot%\...,-123`) that is useless as is.
+/// The session's own display name. Many apps leave it empty; some (the system sounds session)
+/// set an indirect resource string (`@%SystemRoot%\...,-123`), resolved here in the user's
+/// language. An unresolved one is returned as is and rejected by [`pick_name`].
 unsafe fn session_display_name(control: &IAudioSessionControl2) -> Option<String> {
     let raw = control.GetDisplayName().ok()?;
     if raw.is_null() {
@@ -204,7 +220,21 @@ unsafe fn session_display_name(control: &IAudioSessionControl2) -> Option<String
     }
     let name = raw.to_string().ok();
     CoTaskMemFree(Some(raw.0 as *const c_void));
-    name
+    let name = name?;
+    if name.trim_start().starts_with('@') {
+        return Some(indirect_string(name.trim()).unwrap_or(name));
+    }
+    Some(name)
+}
+
+/// Loads an indirect resource string such as `@%SystemRoot%\System32\AudioSrv.Dll,-202`.
+unsafe fn indirect_string(source: &str) -> Option<String> {
+    let wide: Vec<u16> = source.encode_utf16().chain(Some(0)).collect();
+    let mut buffer = [0u16; 512];
+    SHLoadIndirectString(PCWSTR(wide.as_ptr()), &mut buffer, None).ok()?;
+    let end = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+    let text = String::from_utf16_lossy(&buffer[..end]).trim().to_string();
+    (!text.is_empty()).then_some(text)
 }
 
 /// The `FileDescription` of an executable's version resource: `Google Chrome` for chrome.exe.
@@ -430,6 +460,17 @@ mod tests {
         let description = unsafe { file_description(&format!(r"{windir}\System32\notepad.exe")) };
         assert!(description.is_some_and(|d| !d.is_empty()));
         assert_eq!(unsafe { file_description(r"C:\does\not\exist.exe") }, None);
+    }
+
+    #[test]
+    fn indirect_resource_strings_are_resolved() {
+        // The name the system sounds session points to, in the user's language.
+        let name = unsafe { indirect_string(r"@%SystemRoot%\System32\AudioSrv.Dll,-202") };
+        assert!(name.is_some_and(|n| !n.is_empty() && !n.starts_with('@')));
+        assert_eq!(
+            unsafe { indirect_string(r"@C:\does\not\exist.dll,-1") },
+            None
+        );
     }
 
     /// Talks to the real audio service: an empty list on a machine without output devices.

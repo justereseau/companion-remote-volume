@@ -215,7 +215,7 @@ An action whose capability is `false` is answered with `Not supported on this OS
 
 ### Per-app volume and mute
 
-An **app** is every audio session of one program, grouped. Its `id` is the program's file name, lowercased and without `.exe` (`spotify`, `chrome`, `discord`), so it stays the same when the program restarts. `name` is its display name.
+An **app** is every audio session of one program, grouped. Its `id` is the program's file name, lowercased and without `.exe` (`spotify`, `chrome`, `discord`), so it stays the same when the program restarts. `name` is its display name. On Windows the system sounds (notifications, alerts) are the app `system`, named as in the Windows volume mixer.
 
 - `volume` is relative to the master volume (Windows session volume; a PulseAudio/PipeWire stream volume). With PulseAudio's `flat-volumes` on, raising an app can also raise the master volume.
 - When a program has several sessions (browser tabs, helper processes), the reported `volume` is the highest of them, `muted` is `true` only when every session is muted, and every action applies to all of them.
