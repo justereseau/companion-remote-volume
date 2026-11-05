@@ -49,6 +49,15 @@
 			"groupName": "github actions"
 		},
 		{
+			"description": "All minor and patch updates (Rust crates, npm, GitHub Actions) in one weekly PR. Electron stays out: it ships Chromium security fixes and keeps its own fast PR. Not automerged because it contains crates that ship in the app; fix(deps) so release-please cuts a patch release.",
+			"matchUpdateTypes": ["minor", "patch"],
+			"matchPackageNames": ["!electron"],
+			"groupName": "non-major dependencies",
+			"automerge": false,
+			"semanticCommitType": "fix",
+			"semanticCommitScope": "deps"
+		},
+		{
 			"description": "Node in CI (.nvmrc) and engines must match the Node bundled with Electron – no automatic major bumps",
 			"matchPackageNames": ["node"],
 			"matchUpdateTypes": ["major"],
