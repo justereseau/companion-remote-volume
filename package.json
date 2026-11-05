@@ -1,6 +1,6 @@
 {
 	"name": "remote-volume",
-	"version": "1.2.0",
+	"version": "1.3.0",
 	"description": "An application for controlling the system volume over a WebSocket connection",
 	"main": "main.js",
 	"type": "module",

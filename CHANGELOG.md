@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.0](https://github.com/justereseau/companion-remote-volume/compare/v1.2.0...v1.3.0) (2026-11-05)
+
+
+### Features
+
+* **core:** all-Rust app with the WebSocket server and a settings page ([f8998a8](https://github.com/justereseau/companion-remote-volume/commit/f8998a8718433e5c0ccf8c4de449767b3e69d1bb))
+* **core:** all-Rust app with the WebSocket server and a settings page ([266f783](https://github.com/justereseau/companion-remote-volume/commit/266f783871d1695b4f133707200649efb9960f6d))
+* **core:** Rust audio core spike (stdio JSON) ([1ba0478](https://github.com/justereseau/companion-remote-volume/commit/1ba0478042ecb1b9306bc7f3545f027194f1e4b5))
+* **core:** Rust audio core spike with stdio JSON contract ([294a618](https://github.com/justereseau/companion-remote-volume/commit/294a618da2238ac39ffb06693d5a01d09f0e66fa)), closes [#8](https://github.com/justereseau/companion-remote-volume/issues/8)
+
+
+### Bug Fixes
+
+* **core:** WASAPI SetMute takes bool, PropVariantToStringAlloc lives in StructuredStorage ([5c53049](https://github.com/justereseau/companion-remote-volume/commit/5c53049d18c6deeb59b77453725e7dded8ef63b9))
+
 ## [1.2.0](https://github.com/justereseau/companion-remote-volume/compare/v1.1.0...v1.2.0) (2026-11-04)
 
 
