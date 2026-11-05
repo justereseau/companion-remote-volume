@@ -31,7 +31,7 @@ tokio = { version = "1.53.3", features = ["rt-multi-thread", "net", "sync", "tim
 tokio-tungstenite = "0.29.0"
 
 [target.'cfg(windows)'.dependencies.windows]
-version = "0.62"
+version = "0.62.2"
 features = [
 	"Win32_Devices_FunctionDiscovery",
 	"Win32_Foundation",
