@@ -40,6 +40,30 @@ Try the binary by hand:
 echo '{"id":1,"action":"listOutputDevices"}' | cargo run -q
 ```
 
+## remote-volume: the all-Rust app
+
+`remote-volume` is the Electron app's replacement: one binary that talks to the OS audio API, serves the WebSocket protocol Bitfocus Companion uses, and serves a settings page. The Electron app and the `remote-volume-core` sidecar (stdio JSON, `CONTRACT.md`) are unchanged and still build from the same crate.
+
+```sh
+cargo run --release --bin remote-volume -- --open
+```
+
+| What | Where |
+|---|---|
+| WebSocket | `ws://<host>:2501` (port, bind address, token and allowed origins are configurable) |
+| Settings page | `http://127.0.0.1:2502/` (`--settings-port` or `RV_SETTINGS_PORT`; `--open` opens it in the browser) |
+| Config file | `config.json` in `%APPDATA%\RemoteVolume`, `~/Library/Application Support/RemoteVolume` or `~/.config/RemoteVolume` (`--config-dir` or `RV_CONFIG_DIR`) |
+
+Stop it with Ctrl+C. Logs go to stderr.
+
+**Same as the Electron app:** the v1 WebSocket protocol (messages, replies and state broadcasts, byte for byte; the only addition is a trailing `capabilities` key in the state sent on connect), and the security model: bind address option, access token (`?token=` or `Authorization: Bearer`), `Origin` rejection with an allow list, 1 KB payload limit (close code 1009), 20 messages/s per client, 32 clients. Changing the token or origins disconnects only the clients that no longer pass; changing the port or bind address restarts the listener. On the first start the Electron app's `config.json` (`settings`) is imported if it is found.
+
+**Protocol v2 groundwork** is built in (`getCapabilities`, `capabilities` in the initial state, string targets, `Not supported on this OS` / `Device not found` / `App not found`, structural diffs for list-valued state). Nothing is reported as supported yet; the device and app actions plug into `server::Extensions`.
+
+**Different from the Electron app:** no tray icon, no run-on-startup setting (use your OS's autostart for the binary), and the settings window is a web page. That page can change the access token, so it listens on `127.0.0.1` only, answers only to the loopback `Host` names (DNS rebinding), and accepts a save only as JSON from its own origin (cross-site requests). Anyone who can use your computer's loopback interface can still open it.
+
+Tests: `cargo test` runs the protocol, config and settings tests and drives the real server over loopback with a fake audio backend (`tests/ws.rs`, `tests/settings.rs`); no sound card is needed.
+
 ## Optional: self-hosted Mac in CI
 
 Hosted macOS runners only have a virtual sound device. To also run the core on a Mac with real audio:

@@ -4,12 +4,9 @@
 //! Requests are handled one at a time, in order. The process exits when stdin closes, so a
 //! parent that dies never leaves the core behind.
 
-mod backend;
-mod protocol;
-mod volume;
-
 use std::io::{self, BufRead, Read, Write};
 
+use remote_volume_core::{backend, protocol};
 use serde_json::Value;
 
 enum Line {

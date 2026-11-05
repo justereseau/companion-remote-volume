@@ -192,11 +192,30 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      # Unit tests, stdio protocol tests, and the audio tests selected by RV_INTEGRATION.
-      - name: Test
+      # Unit tests, protocol tests over stdio and WebSocket, and the audio tests selected by RV_INTEGRATION.
+      # On Linux the same run measures line coverage and fails below 85%: it is the one leg where a real
+      # backend (PulseAudio null sink) is under test, so the gate also covers that code. The Windows and
+      # macOS backends only run on their own legs and are not part of the number.
+      - name: Coverage tools (Linux)
+        if: runner.os == 'Linux'
+        run: rustup component add llvm-tools-preview
+
+      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+        if: runner.os == 'Linux'
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Test with coverage gate (Linux)
+        if: runner.os == 'Linux'
         env:
           RV_INTEGRATION: ${{ matrix.integration }}
-          RV_EXPECT_SINK: ${{ runner.os == 'Linux' && 'ci_sink' || '' }}
+          RV_EXPECT_SINK: ci_sink
+        run: cargo llvm-cov --locked --summary-only --fail-under-lines 85 -- --nocapture
+
+      - name: Test
+        if: runner.os != 'Linux'
+        env:
+          RV_INTEGRATION: ${{ matrix.integration }}
         run: cargo test --locked -- --nocapture
 
   dependency-review:

@@ -7,12 +7,28 @@ description = "OS audio core for Remote Volume: line-delimited JSON over stdio"
 license = "MIT"
 publish = false
 
+[lib]
+name = "remote_volume_core"
+path = "src/lib.rs"
+
+# The sidecar of the Electron app (stdio JSON, see CONTRACT.md).
 [[bin]]
 name = "remote-volume-core"
 path = "src/main.rs"
 
+# The all-Rust app: WebSocket server for Companion plus a local settings page.
+[[bin]]
+name = "remote-volume"
+path = "src/bin/remote-volume.rs"
+
 [dependencies]
-serde_json = "1"
+futures-util = "0.3.34"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10.9"
+tiny_http = "0.12.0"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "signal"] }
+tokio-tungstenite = "0.29.0"
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.62"

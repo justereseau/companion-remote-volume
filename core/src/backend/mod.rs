@@ -98,6 +98,16 @@ impl Capabilities {
     }
 }
 
+/// Features of the WebSocket protocol v2 (per-app audio, device selection) that this machine
+/// supports right now. Nothing is wired up to the protocol yet, so every backend reports none.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Features {
+    pub devices_list: bool,
+    pub devices_select: bool,
+    pub apps_volume: bool,
+    pub apps_mute: bool,
+}
+
 /// Everything operates on the default output device. Volume is an integer percent, 0-100, where
 /// 0 is really 0 (not "unchanged", not "quietest step above 0").
 pub trait Backend {
@@ -109,6 +119,11 @@ pub trait Backend {
     fn get_muted(&mut self) -> AudioResult<bool>;
     /// Returns the mute state read back from the OS after setting it.
     fn set_muted(&mut self, muted: bool) -> AudioResult<bool>;
+    /// Protocol v2 features available right now (asked on every capability query, because the
+    /// answer can change at runtime, e.g. when a Pulse server starts). Default: none.
+    fn features(&mut self) -> Features {
+        Features::default()
+    }
 }
 
 /// The backend for the OS this binary was built for.
