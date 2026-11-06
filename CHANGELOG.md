@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.6.0](https://github.com/justereseau/companion-remote-volume/compare/v1.5.0...v1.6.0) (2026-11-06)
+
+
+### Features
+
+* **core:** function keys F1 to F24 ([377f30b](https://github.com/justereseau/companion-remote-volume/commit/377f30b74ffd0be06c938e2aabbc640852f8ec31))
+* **core:** function keys F1 to F24 ([0dd9396](https://github.com/justereseau/companion-remote-volume/commit/0dd9396fba9e540b54fc58af33581e5ed76d3632))
+
 ## [1.5.0](https://github.com/justereseau/companion-remote-volume/compare/v1.4.0...v1.5.0) (2026-11-06)
 
 
