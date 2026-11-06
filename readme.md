@@ -9,6 +9,7 @@ A small native app that lets you control the OS audio volume over a WebSocket co
 - Get the current audio output device
 - Per-app volume and mute ([protocol v2](#protocol-v2)) on Windows and Linux (PulseAudio / PipeWire)
 - Media keys: play/pause, next and previous track, like a keyboard's ([protocol v2](#media-keys)), on Windows and Linux
+- Function keys F1 to F24, e.g. as hotkeys for other apps ([protocol v2](#function-keys)), on Windows and Linux (X11)
 
 Connected clients are kept in sync automatically:
 
@@ -210,7 +211,8 @@ What this computer supports right now. It depends on the OS and on the moment (f
 		"protocolVersion": 2,
 		"outputDevices": { "list": false, "select": false },
 		"apps": { "volume": true, "mute": true },
-		"media": { "keys": true }
+		"media": { "keys": true },
+		"keyboard": { "functionKeys": true }
 	}
 }
 ```
@@ -273,6 +275,22 @@ There is no reply on success, and no state changes. On Linux the answer is `No m
 | Windows | supported: real key presses (`SendInput`). Windows ignores them while an app running as administrator has the focus. |
 | Linux | supported: desktops route media keys to players over MPRIS (D-Bus); the app does the same with `dbus-send`, picking the player that is playing, else a paused one. Needs a D-Bus session (any desktop session). |
 | macOS | not yet: sending media keys needs the Accessibility permission |
+
+### Function keys
+
+Presses and releases F1 to F24 on that computer, like a keyboard: the focused window gets the key, or the app that registered it as a global hotkey. F13 to F24 are not on most keyboards, so they make good hotkeys for other apps (OBS, Discord, ...).
+
+| Action | Payload | Capability |
+|---|---|---|
+| `pressFunctionKey` | `{ "action": "pressFunctionKey", "value": 13 }` (1 - 24 for F1 - F24) | `keyboard.functionKeys` |
+
+There is no reply on success, and no state changes.
+
+| OS | Status |
+|---|---|
+| Windows | supported: real key presses (`SendInput`). Windows ignores them while an app running as administrator has the focus. |
+| Linux | X11 only, with `xdotool` installed (`sudo apt install xdotool`): Wayland does not accept key presses from other programs, except for apps running through XWayland while they have the focus. Checked when the app starts; without `xdotool` or a display the capability is `false`. |
+| macOS | not yet: sending keys needs the Accessibility permission |
 
 ## Credits
 

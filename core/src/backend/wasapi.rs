@@ -26,8 +26,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PLAY_PAUSE,
-    VK_MEDIA_PREV_TRACK,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_F1, VK_MEDIA_NEXT_TRACK,
+    VK_MEDIA_PLAY_PAUSE, VK_MEDIA_PREV_TRACK,
 };
 use windows::Win32::UI::Shell::SHLoadIndirectString;
 
@@ -306,16 +306,22 @@ fn pick_name(session: Option<&str>, executable: &str) -> String {
 }
 
 /// Presses and releases a key, like a keyboard does: Windows sends media keys to the player that
-/// handles them (the one shown in the volume flyout). Windows silently drops input sent while an
-/// elevated window has the focus.
-fn press_key(key: VIRTUAL_KEY) -> AudioResult<()> {
+/// handles them (the one shown in the volume flyout), other keys to the focused window or a global
+/// hotkey. Media keys are extended keys. Windows silently drops input sent while an elevated window
+/// has the focus.
+fn press_key(key: VIRTUAL_KEY, extended: bool) -> AudioResult<()> {
+    let base = if extended {
+        KEYEVENTF_EXTENDEDKEY
+    } else {
+        KEYBD_EVENT_FLAGS(0)
+    };
     let input = |flags: KEYBD_EVENT_FLAGS| INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: key,
                 wScan: 0,
-                dwFlags: KEYEVENTF_EXTENDEDKEY | flags,
+                dwFlags: base | flags,
                 time: 0,
                 dwExtraInfo: 0,
             },
@@ -434,16 +440,28 @@ impl Backend for Wasapi {
             apps_mute: available,
             // Key presses go to the user's session, whatever the audio service does.
             media_keys: true,
+            function_keys: true,
             ..Features::default()
         }
     }
 
+    fn press_function_key(&mut self, number: u8) -> AudioResult<()> {
+        // VK_F1 to VK_F24 are consecutive.
+        press_key(
+            VIRTUAL_KEY(VK_F1.0 + u16::from(number.clamp(1, 24)) - 1),
+            false,
+        )
+    }
+
     fn press_media_key(&mut self, key: MediaKey) -> AudioResult<()> {
-        press_key(match key {
-            MediaKey::PlayPause => VK_MEDIA_PLAY_PAUSE,
-            MediaKey::Next => VK_MEDIA_NEXT_TRACK,
-            MediaKey::Previous => VK_MEDIA_PREV_TRACK,
-        })
+        press_key(
+            match key {
+                MediaKey::PlayPause => VK_MEDIA_PLAY_PAUSE,
+                MediaKey::Next => VK_MEDIA_NEXT_TRACK,
+                MediaKey::Previous => VK_MEDIA_PREV_TRACK,
+            },
+            true,
+        )
     }
 
     fn list_app_sessions(&mut self) -> AudioResult<Vec<AppSession>> {

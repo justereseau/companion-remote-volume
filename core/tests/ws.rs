@@ -125,6 +125,14 @@ impl Backend for FakeBackend {
         s.calls.push(format!("mediaKey {key:?}"));
         Ok(())
     }
+    fn press_function_key(&mut self, number: u8) -> AudioResult<()> {
+        let mut s = self.0.lock().unwrap();
+        if let Some(code) = s.media_error {
+            return Err(AudioError::new(code, "cannot press keys"));
+        }
+        s.calls.push(format!("functionKey F{number}"));
+        Ok(())
+    }
 }
 
 impl FakeBackend {
@@ -294,7 +302,7 @@ impl Client {
     }
 }
 
-const NO_CAPS: &str = r#"{"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false}}"#;
+const NO_CAPS: &str = r#"{"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false},"keyboard":{"functionKeys":false}}"#;
 
 // ---- v1 behaviour -------------------------------------------------------------------------------
 
@@ -962,12 +970,13 @@ async fn get_capabilities_replies_with_the_backends_runtime_answer() {
             apps_volume: true,
             apps_mute: true,
             media_keys: true,
+            function_keys: true,
         }
     });
     c.send(json!({"action":"getCapabilities"})).await;
     assert_eq!(
         c.next().await,
-        json!({"capabilities":{"protocolVersion":2,"outputDevices":{"list":true,"select":true},"apps":{"volume":true,"mute":true},"media":{"keys":true}}})
+        json!({"capabilities":{"protocolVersion":2,"outputDevices":{"list":true,"select":true},"apps":{"volume":true,"mute":true},"media":{"keys":true},"keyboard":{"functionKeys":true}}})
     );
     assert!(
         env.calls().is_empty(),
@@ -1048,6 +1057,40 @@ async fn media_keys_are_refused_where_unsupported_or_without_a_player() {
         json!({"action":"mediaPreviousTrack","response":{"error":"Failed to execute action"}})
     );
     assert!(env.calls().is_empty());
+}
+
+#[tokio::test]
+async fn function_keys_reach_the_backend_or_are_refused() {
+    let env = env().await;
+    let mut c = env.connect().await;
+    c.next().await;
+    c.send(json!({"action":"pressFunctionKey","value":13}))
+        .await;
+    assert_eq!(
+        c.next().await,
+        json!({"action":"pressFunctionKey","response":{"error":"Not supported on this OS"}})
+    );
+
+    env.set(|s| s.features.function_keys = true);
+    c.send(json!({"action":"pressFunctionKey","value":13}))
+        .await;
+    c.send(json!({"action":"pressFunctionKey","value":24}))
+        .await;
+    c.send(json!({"action":"pressFunctionKey","value":25}))
+        .await;
+    assert_eq!(
+        c.next().await,
+        json!({"action":"pressFunctionKey","response":{"error":"Invalid value for pressFunctionKey. Must be an integer between 1 and 24."}})
+    );
+    c.quiet().await;
+    assert_eq!(env.calls(), ["functionKey F13", "functionKey F24"]);
+
+    env.set(|s| s.media_error = Some(ErrorCode::Internal));
+    c.send(json!({"action":"pressFunctionKey","value":1})).await;
+    assert_eq!(
+        c.next().await,
+        json!({"action":"pressFunctionKey","response":{"error":"Failed to execute action"}})
+    );
 }
 
 // Device actions come with #12. These tests plug a stand-in ("things") into the extension points to

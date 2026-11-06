@@ -33,7 +33,7 @@ use crate::log::Log;
 use crate::wsproto::{
     admit_client, capabilities_json, error_reply, errors, has_capability, parse_message,
     same_value, ActionSpec, Handshake, Message, RateLimiter, Refusal, TargetKind, APP_ACTIONS,
-    BUILTIN_ACTIONS, MAX_PAYLOAD_BYTES, MEDIA_ACTIONS,
+    BUILTIN_ACTIONS, KEYBOARD_ACTIONS, MAX_PAYLOAD_BYTES, MEDIA_ACTIONS,
 };
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -149,6 +149,7 @@ impl Server {
         let mut actions = BUILTIN_ACTIONS.to_vec();
         actions.extend(APP_ACTIONS);
         actions.extend(MEDIA_ACTIONS);
+        actions.extend(KEYBOARD_ACTIONS);
         actions.extend(ext.actions.iter().copied());
         let mut state_keys = vec!["volume", "muted", "outputDevice", "apps"];
         state_keys.extend(ext.state.iter().map(|(key, _)| *key));
@@ -494,6 +495,14 @@ impl Inner {
                 }
                 Err(error) => Err(error.to_string()),
             };
+        }
+        if msg.action == "pressFunctionKey" {
+            return self
+                .audio
+                .press_function_key(value)
+                .await
+                .map(|()| Outcome::Done(Value::Null))
+                .map_err(failed);
         }
         let result = match msg.action {
             "setVolume" => self

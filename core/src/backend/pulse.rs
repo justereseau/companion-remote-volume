@@ -331,12 +331,15 @@ fn listen(changed: &Rc<dyn Fn()>) -> Result<(), String> {
 pub struct Pulse {
     /// Media keys go through `dbus-send` (see [`super::mpris`]); checked once, at start.
     media_keys: bool,
+    /// Function keys go through `xdotool` (see [`super::xdotool`]); checked once, at start.
+    function_keys: bool,
 }
 
 impl Pulse {
     pub fn new() -> Self {
         Pulse {
             media_keys: super::mpris::available(),
+            function_keys: super::xdotool::available(),
         }
     }
 
@@ -423,12 +426,17 @@ impl Backend for Pulse {
             apps_volume: available,
             apps_mute: available,
             media_keys: self.media_keys,
+            function_keys: self.function_keys,
             ..Features::default()
         }
     }
 
     fn press_media_key(&mut self, key: MediaKey) -> AudioResult<()> {
         super::mpris::press(key)
+    }
+
+    fn press_function_key(&mut self, number: u8) -> AudioResult<()> {
+        super::xdotool::press_function_key(number)
     }
 
     fn list_app_sessions(&mut self) -> AudioResult<Vec<AppSession>> {
