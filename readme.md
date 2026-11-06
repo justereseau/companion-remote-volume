@@ -7,7 +7,7 @@ A small native app that lets you control the OS audio volume over a WebSocket co
 - Get, set, increase or decrease the audio volume
 - Get, mute, unmute or toggle the mute state of the audio volume
 - Get the current audio output device
-- Per-app volume and mute ([protocol v2](#protocol-v2)) on Linux (PulseAudio / PipeWire); Windows is in progress
+- Per-app volume and mute ([protocol v2](#protocol-v2)) on Windows and Linux (PulseAudio / PipeWire)
 
 Connected clients are kept in sync automatically:
 
@@ -216,7 +216,7 @@ An action whose capability is `false` is answered with `Not supported on this OS
 
 ### Per-app volume and mute
 
-An **app** is every audio session of one program, grouped. Its `id` is the program's file name, lowercased and without `.exe` (`spotify`, `chrome`, `discord`), so it stays the same when the program restarts. `name` is its display name.
+An **app** is every audio session of one program, grouped. Its `id` is the program's file name, lowercased and without `.exe` (`spotify`, `chrome`, `discord`), so it stays the same when the program restarts. `name` is its display name. On Windows the system sounds (notifications, alerts) are the app `system`, named as in the Windows volume mixer.
 
 - `volume` is relative to the master volume (Windows session volume; a PulseAudio/PipeWire stream volume). With PulseAudio's `flat-volumes` on, raising an app can also raise the master volume.
 - When a program has several sessions (browser tabs, helper processes), the reported `volume` is the highest of them, `muted` is `true` only when every session is muted, and every action applies to all of them.
@@ -249,7 +249,7 @@ Like the v1 commands, the changing actions send no reply: the new `apps` list is
 | OS | Volume | Mute | Status |
 |---|---|---|---|
 | Linux, PulseAudio / PipeWire | yes | yes | supported. An app is a program's playback streams; changes made in other mixers (pavucontrol) are pushed without polling |
-| Windows | yes | yes | in progress ([#17](https://github.com/Justereseau/companion-remote-volume/issues/17)) |
+| Windows | yes | yes | supported. Changes made in the Windows mixer are picked up by polling |
 | macOS | no | maybe on 14.2+ | being investigated ([#19](https://github.com/Justereseau/companion-remote-volume/issues/19)) |
 | Linux, ALSA only | no | no | not possible |
 

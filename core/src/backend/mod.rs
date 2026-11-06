@@ -115,7 +115,7 @@ impl Capabilities {
 }
 
 /// Features of the WebSocket protocol v2 (per-app audio, device selection) that this machine
-/// supports right now. Linux (Pulse) reports per-app audio; the other backends report none yet.
+/// supports right now. Windows and Linux (Pulse) report per-app audio; macOS reports none yet.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Features {
     pub devices_list: bool,
