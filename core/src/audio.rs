@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use crate::apps::{self, App};
-use crate::backend::{AudioError, AudioResult, Backend, ErrorCode, Features};
+use crate::backend::{AudioError, AudioResult, Backend, ErrorCode, Features, MediaKey};
 
 type Job = Box<dyn FnOnce(&mut dyn Backend) + Send>;
 
@@ -168,6 +168,10 @@ impl AudioHandle {
             b.set_app_muted(&app.id, muted)
         })
         .await?
+    }
+
+    pub async fn press_media_key(&self, key: MediaKey) -> AudioResult<()> {
+        self.run(move |b| b.press_media_key(key)).await?
     }
 
     /// Mute the app unless it is muted (every session muted); then unmute it.

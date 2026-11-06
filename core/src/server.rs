@@ -27,13 +27,13 @@ use tokio_tungstenite::{accept_hdr_async_with_config, WebSocketStream};
 
 use crate::apps;
 use crate::audio::AudioHandle;
-use crate::backend::{AudioError, ErrorCode, Features};
+use crate::backend::{AudioError, ErrorCode, Features, MediaKey};
 use crate::config::Config;
 use crate::log::Log;
 use crate::wsproto::{
     admit_client, capabilities_json, error_reply, errors, has_capability, parse_message,
     same_value, ActionSpec, Handshake, Message, RateLimiter, Refusal, TargetKind, APP_ACTIONS,
-    BUILTIN_ACTIONS, MAX_PAYLOAD_BYTES,
+    BUILTIN_ACTIONS, MAX_PAYLOAD_BYTES, MEDIA_ACTIONS,
 };
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -148,6 +148,7 @@ impl Server {
     ) -> Server {
         let mut actions = BUILTIN_ACTIONS.to_vec();
         actions.extend(APP_ACTIONS);
+        actions.extend(MEDIA_ACTIONS);
         actions.extend(ext.actions.iter().copied());
         let mut state_keys = vec!["volume", "muted", "outputDevice", "apps"];
         state_keys.extend(ext.state.iter().map(|(key, _)| *key));
@@ -476,6 +477,23 @@ impl Inner {
         let value = msg.value.map(|v| v as u8).unwrap_or(0);
         if APP_ACTIONS.iter().any(|a| a.name == msg.action) {
             return self.execute_app(msg, value).await;
+        }
+        let media = match msg.action {
+            "mediaPlayPause" => Some(MediaKey::PlayPause),
+            "mediaNextTrack" => Some(MediaKey::Next),
+            "mediaPreviousTrack" => Some(MediaKey::Previous),
+            _ => None,
+        };
+        if let Some(key) = media {
+            return match self.audio.press_media_key(key).await {
+                Ok(()) => Ok(Outcome::Done(Value::Null)),
+                Err(error) if error.code == ErrorCode::NotFound => {
+                    self.log
+                        .warn(&format!("{}: {}", msg.action, errors::NO_MEDIA_PLAYER));
+                    Ok(Outcome::Refused(errors::NO_MEDIA_PLAYER))
+                }
+                Err(error) => Err(error.to_string()),
+            };
         }
         let result = match msg.action {
             "setVolume" => self

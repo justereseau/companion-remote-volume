@@ -8,6 +8,7 @@ A small native app that lets you control the OS audio volume over a WebSocket co
 - Get, mute, unmute or toggle the mute state of the audio volume
 - Get the current audio output device
 - Per-app volume and mute ([protocol v2](#protocol-v2)) on Windows and Linux (PulseAudio / PipeWire)
+- Media keys: play/pause, next and previous track, like a keyboard's ([protocol v2](#media-keys)), on Windows and Linux
 
 Connected clients are kept in sync automatically:
 
@@ -189,6 +190,7 @@ A refused or failed action is answered with `{ "action": "<action>", "response":
 | `Rate limit exceeded` | More than 20 messages/second |
 | `Not supported on this OS` | Protocol v2: the feature is unavailable here (see `capabilities`) |
 | `App not found` | Protocol v2: no running app matches `app` |
+| `No media player found` | Protocol v2: a media key was sent but no media player is running (Linux) |
 
 ## Protocol v2
 
@@ -207,7 +209,8 @@ What this computer supports right now. It depends on the OS and on the moment (f
 	"capabilities": {
 		"protocolVersion": 2,
 		"outputDevices": { "list": false, "select": false },
-		"apps": { "volume": true, "mute": true }
+		"apps": { "volume": true, "mute": true },
+		"media": { "keys": true }
 	}
 }
 ```
@@ -252,6 +255,24 @@ Like the v1 commands, the changing actions send no reply: the new `apps` list is
 | Windows | yes | yes | supported. Changes made in the Windows mixer are picked up by polling |
 | macOS | no | maybe on 14.2+ | being investigated ([#19](https://github.com/Justereseau/companion-remote-volume/issues/19)) |
 | Linux, ALSA only | no | no | not possible |
+
+### Media keys
+
+The same as pressing the media keys of a keyboard on that computer: the OS sends them to the media player it picks.
+
+| Action | Payload | Capability |
+|---|---|---|
+| `mediaPlayPause` | `{ "action": "mediaPlayPause" }` | `media.keys` |
+| `mediaNextTrack` | `{ "action": "mediaNextTrack" }` | `media.keys` |
+| `mediaPreviousTrack` | `{ "action": "mediaPreviousTrack" }` | `media.keys` |
+
+There is no reply on success, and no state changes. On Linux the answer is `No media player found` when no player is running.
+
+| OS | Status |
+|---|---|
+| Windows | supported: real key presses (`SendInput`). Windows ignores them while an app running as administrator has the focus. |
+| Linux | supported: desktops route media keys to players over MPRIS (D-Bus); the app does the same with `dbus-send`, picking the player that is playing, else a paused one. Needs a D-Bus session (any desktop session). |
+| macOS | not yet: sending media keys needs the Accessibility permission |
 
 ## Credits
 
