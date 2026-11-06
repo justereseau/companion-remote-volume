@@ -12,6 +12,8 @@ mod pulse;
 mod unsupported;
 #[cfg(target_os = "windows")]
 mod wasapi;
+#[cfg(target_os = "linux")]
+mod xdotool;
 
 /// Machine-readable error codes sent to clients. See CONTRACT.md.
 #[allow(dead_code)] // some codes are only produced by some platform backends
@@ -126,6 +128,8 @@ pub struct Features {
     pub apps_mute: bool,
     /// Play/pause, next and previous track, like the media keys of a keyboard.
     pub media_keys: bool,
+    /// F1 to F24, pressed like on a keyboard.
+    pub function_keys: bool,
 }
 
 /// A media key of a keyboard.
@@ -168,6 +172,14 @@ pub trait Backend {
     /// player it picks. `NotFound` when the OS knows there is no player. Default: unsupported.
     fn press_media_key(&mut self, _key: MediaKey) -> AudioResult<()> {
         Err(unsupported_media_keys())
+    }
+    /// Press and release the function key F`number` (1-24), like a keyboard: the focused window
+    /// gets it. Default: unsupported.
+    fn press_function_key(&mut self, _number: u8) -> AudioResult<()> {
+        Err(AudioError::new(
+            ErrorCode::Unsupported,
+            "function keys are not supported on this OS",
+        ))
     }
 }
 

@@ -203,6 +203,18 @@ pub const MEDIA_ACTIONS: [ActionSpec; 3] = [
     media("mediaPreviousTrack"),
 ];
 
+/// Function keys F1-F24 (protocol v2): `value` is the key number. No reply on success, and no
+/// state to push.
+pub const KEYBOARD_ACTIONS: [ActionSpec; 1] = [ActionSpec {
+    value: Some(ValueSpec {
+        min: 1,
+        max: 24,
+        error: "Invalid value for pressFunctionKey. Must be an integer between 1 and 24.",
+    }),
+    requires: Some("keyboard.functionKeys"),
+    ..ActionSpec::new("pressFunctionKey")
+}];
+
 /// One validated client message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Message {
@@ -302,6 +314,7 @@ pub fn capabilities_json(features: &Features) -> Value {
         "outputDevices": { "list": features.devices_list, "select": features.devices_select },
         "apps": { "volume": features.apps_volume, "mute": features.apps_mute },
         "media": { "keys": features.media_keys },
+        "keyboard": { "functionKeys": features.function_keys },
     })
 }
 
@@ -315,6 +328,7 @@ pub fn has_capability(features: &Features, path: &str) -> bool {
         "apps.volume" => features.apps_volume,
         "apps.mute" => features.apps_mute,
         "media.keys" => features.media_keys,
+        "keyboard.functionKeys" => features.function_keys,
         _ => false,
     }
 }
@@ -770,11 +784,11 @@ mod tests {
         let none = capabilities_json(&Features::default());
         assert_eq!(
             none,
-            json!({"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false}})
+            json!({"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false},"keyboard":{"functionKeys":false}})
         );
         assert_eq!(
             none.to_string(),
-            r#"{"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false}}"#
+            r#"{"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false},"keyboard":{"functionKeys":false}}"#
         );
         let some = Features {
             apps_volume: true,
@@ -793,6 +807,32 @@ mod tests {
         };
         assert_eq!(capabilities_json(&media)["media"]["keys"], true);
         assert!(has_capability(&media, "media.keys"));
+        assert!(!has_capability(&media, "keyboard.functionKeys"));
+        let keys = Features {
+            function_keys: true,
+            ..Features::default()
+        };
+        assert_eq!(capabilities_json(&keys)["keyboard"]["functionKeys"], true);
+        assert!(has_capability(&keys, "keyboard.functionKeys"));
+    }
+
+    #[test]
+    fn function_keys_are_numbered_1_to_24() {
+        let parse = |v: Value| parse_message(v.to_string().as_bytes(), &KEYBOARD_ACTIONS);
+        let f13 = parse(json!({"action":"pressFunctionKey","value":13})).unwrap();
+        assert_eq!((f13.action, f13.value), ("pressFunctionKey", Some(13)));
+        assert!(parse(json!({"action":"pressFunctionKey","value":1})).is_ok());
+        assert!(parse(json!({"action":"pressFunctionKey","value":24})).is_ok());
+        for bad in [json!(0), json!(25), json!("F13"), json!(null)] {
+            assert_eq!(
+                parse(json!({"action":"pressFunctionKey","value":bad}))
+                    .unwrap_err()
+                    .error,
+                "Invalid value for pressFunctionKey. Must be an integer between 1 and 24."
+            );
+        }
+        let spec = KEYBOARD_ACTIONS[0];
+        assert!(!spec.reply && !spec.mutates);
     }
 
     #[test]

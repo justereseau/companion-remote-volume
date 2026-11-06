@@ -174,6 +174,10 @@ impl AudioHandle {
         self.run(move |b| b.press_media_key(key)).await?
     }
 
+    pub async fn press_function_key(&self, number: u8) -> AudioResult<()> {
+        self.run(move |b| b.press_function_key(number)).await?
+    }
+
     /// Mute the app unless it is muted (every session muted); then unmute it.
     pub async fn toggle_app_mute(&self, target: String) -> AudioResult<()> {
         self.run(move |b| {
