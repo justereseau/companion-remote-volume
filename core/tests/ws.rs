@@ -709,6 +709,21 @@ async fn without_polling_external_changes_are_not_pushed_on_their_own() {
     c.quiet().await;
 }
 
+#[tokio::test]
+async fn os_change_notifications_push_external_changes_without_polling() {
+    let env = env().await;
+    let mut c = env.connect().await;
+    c.next().await;
+    let changed = env.server.change_notifier();
+    env.set(|s| s.volume = 98);
+    // A burst of notifications from another thread is read in one pass.
+    std::thread::spawn(move || (0..5).for_each(|_| changed()))
+        .join()
+        .unwrap();
+    assert_eq!(c.next().await, json!({"volume":98}));
+    c.quiet().await;
+}
+
 // ---- configuration changes ----------------------------------------------------------------------
 
 #[tokio::test]
