@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.5.0](https://github.com/justereseau/companion-remote-volume/compare/v1.4.0...v1.5.0) (2026-11-06)
+
+
+### Features
+
+* **core:** list the Windows system sounds as the app "system" ([b7494d2](https://github.com/justereseau/companion-remote-volume/commit/b7494d2c1abc60e804f3f44b722c4074d14d3938))
+* **core:** media keys (play/pause, next, previous) ([a9d6915](https://github.com/justereseau/companion-remote-volume/commit/a9d6915f0d6b4d54a01cbbeb8f30d77c449607e3))
+* **core:** media keys (play/pause, next, previous) ([fc1f18b](https://github.com/justereseau/companion-remote-volume/commit/fc1f18b674beec671798b4cc31ec5b769cadab6f))
+* **core:** per-app audio and change events on Linux ([d0eac35](https://github.com/justereseau/companion-remote-volume/commit/d0eac35d75c2389d482e3bf84ffb168552fec0b3))
+* **core:** per-app volume and mute on Linux ([c085b7e](https://github.com/justereseau/companion-remote-volume/commit/c085b7ed26762e18b320e576ba0c1b0d5f026cfa))
+* **core:** per-app volume and mute on Windows ([37393b0](https://github.com/justereseau/companion-remote-volume/commit/37393b0ad933ff61d0c846d4c90531c6bc9728d6))
+* **core:** per-app volume and mute on Windows ([f497f90](https://github.com/justereseau/companion-remote-volume/commit/f497f908db6f8ce61aca82f0943802d04ef5c412)), closes [#17](https://github.com/justereseau/companion-remote-volume/issues/17)
+* **core:** push Linux audio changes without polling ([94ea903](https://github.com/justereseau/companion-remote-volume/commit/94ea9039799870d595337eae4c4f09238ba234f1))
+
 ## [1.4.0](https://github.com/justereseau/companion-remote-volume/compare/v1.3.0...v1.4.0) (2026-11-05)
 
 
