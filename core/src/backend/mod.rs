@@ -5,6 +5,8 @@ use std::fmt;
 #[cfg(target_os = "macos")]
 mod coreaudio;
 #[cfg(target_os = "linux")]
+mod mpris;
+#[cfg(target_os = "linux")]
 mod pulse;
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 mod unsupported;
@@ -122,6 +124,16 @@ pub struct Features {
     pub devices_select: bool,
     pub apps_volume: bool,
     pub apps_mute: bool,
+    /// Play/pause, next and previous track, like the media keys of a keyboard.
+    pub media_keys: bool,
+}
+
+/// A media key of a keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKey {
+    PlayPause,
+    Next,
+    Previous,
 }
 
 /// Everything operates on the default output device. Volume is an integer percent, 0-100, where
@@ -152,6 +164,19 @@ pub trait Backend {
     fn set_app_muted(&mut self, _id: &str, _muted: bool) -> AudioResult<()> {
         Err(unsupported_apps())
     }
+    /// Press a media key, with the same effect as on a keyboard: the OS sends it to the media
+    /// player it picks. `NotFound` when the OS knows there is no player. Default: unsupported.
+    fn press_media_key(&mut self, _key: MediaKey) -> AudioResult<()> {
+        Err(unsupported_media_keys())
+    }
+}
+
+/// Default of [`Backend::press_media_key`].
+fn unsupported_media_keys() -> AudioError {
+    AudioError::new(
+        ErrorCode::Unsupported,
+        "media keys are not supported on this OS",
+    )
 }
 
 fn unsupported_apps() -> AudioError {

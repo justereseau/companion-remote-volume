@@ -24,6 +24,7 @@ use libpulse_binding::volume::{ChannelVolumes, Volume};
 
 use super::{
     AppSession, AudioError, AudioResult, Backend, Capabilities, Device, ErrorCode, Features,
+    MediaKey,
 };
 use crate::apps::app_id;
 
@@ -327,11 +328,16 @@ fn listen(changed: &Rc<dyn Fn()>) -> Result<(), String> {
     }
 }
 
-pub struct Pulse;
+pub struct Pulse {
+    /// Media keys go through `dbus-send` (see [`super::mpris`]); checked once, at start.
+    media_keys: bool,
+}
 
 impl Pulse {
     pub fn new() -> Self {
-        Pulse
+        Pulse {
+            media_keys: super::mpris::available(),
+        }
     }
 
     fn connect(&self) -> AudioResult<Conn> {
@@ -416,8 +422,13 @@ impl Backend for Pulse {
         Features {
             apps_volume: available,
             apps_mute: available,
+            media_keys: self.media_keys,
             ..Features::default()
         }
+    }
+
+    fn press_media_key(&mut self, key: MediaKey) -> AudioResult<()> {
+        super::mpris::press(key)
     }
 
     fn list_app_sessions(&mut self) -> AudioResult<Vec<AppSession>> {

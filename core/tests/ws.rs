@@ -8,6 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use remote_volume_core::audio::AudioHandle;
 use remote_volume_core::backend::{
     AppSession, AudioError, AudioResult, Backend, Capabilities, Device, ErrorCode, Features,
+    MediaKey,
 };
 use remote_volume_core::config::{Config, Polling};
 use remote_volume_core::log::{Log, MemoryLog, NoLog};
@@ -37,6 +38,8 @@ struct FakeState {
     /// Per-app sessions; `None` = per-app audio unsupported (the default, like every OS today).
     sessions: Option<Vec<AppSession>>,
     fail_apps: bool,
+    /// What `press_media_key` answers: `None` = a player got the key.
+    media_error: Option<ErrorCode>,
 }
 
 type Shared = Arc<Mutex<FakeState>>;
@@ -114,6 +117,14 @@ impl Backend for FakeBackend {
     fn set_app_muted(&mut self, id: &str, muted: bool) -> AudioResult<()> {
         self.each_session(id, format!("setAppMuted {id} {muted}"), |x| x.muted = muted)
     }
+    fn press_media_key(&mut self, key: MediaKey) -> AudioResult<()> {
+        let mut s = self.0.lock().unwrap();
+        if let Some(code) = s.media_error {
+            return Err(AudioError::new(code, "no player"));
+        }
+        s.calls.push(format!("mediaKey {key:?}"));
+        Ok(())
+    }
 }
 
 impl FakeBackend {
@@ -171,6 +182,7 @@ async fn env_with(config: Config, ext: Extensions) -> Env {
         read_delay_ms: 0,
         sessions: None,
         fail_apps: false,
+        media_error: None,
     }));
     let backend_state = state.clone();
     let audio = AudioHandle::spawn(move || Box::new(FakeBackend(backend_state)));
@@ -282,7 +294,7 @@ impl Client {
     }
 }
 
-const NO_CAPS: &str = r#"{"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false}}"#;
+const NO_CAPS: &str = r#"{"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false}}"#;
 
 // ---- v1 behaviour -------------------------------------------------------------------------------
 
@@ -900,6 +912,7 @@ fn blank_state() -> FakeState {
         read_delay_ms: 0,
         sessions: None,
         fail_apps: false,
+        media_error: None,
     }
 }
 
@@ -948,12 +961,13 @@ async fn get_capabilities_replies_with_the_backends_runtime_answer() {
             devices_select: true,
             apps_volume: true,
             apps_mute: true,
+            media_keys: true,
         }
     });
     c.send(json!({"action":"getCapabilities"})).await;
     assert_eq!(
         c.next().await,
-        json!({"capabilities":{"protocolVersion":2,"outputDevices":{"list":true,"select":true},"apps":{"volume":true,"mute":true}}})
+        json!({"capabilities":{"protocolVersion":2,"outputDevices":{"list":true,"select":true},"apps":{"volume":true,"mute":true},"media":{"keys":true}}})
     );
     assert!(
         env.calls().is_empty(),
@@ -987,6 +1001,53 @@ async fn capabilities_are_never_broadcast_as_state_changes() {
     env.server.refresh().await;
     assert_eq!(c.next().await, json!({"volume":41}));
     c.quiet().await;
+}
+
+#[tokio::test]
+async fn media_keys_reach_the_backend_without_reply_or_state_push() {
+    let env = env().await;
+    env.set(|s| s.features.media_keys = true);
+    let mut c = env.connect().await;
+    c.next().await;
+    for action in ["mediaPlayPause", "mediaNextTrack", "mediaPreviousTrack"] {
+        c.send(json!({ "action": action })).await;
+    }
+    sleep(Duration::from_millis(200)).await;
+    c.quiet().await;
+    assert_eq!(
+        env.calls(),
+        ["mediaKey PlayPause", "mediaKey Next", "mediaKey Previous"]
+    );
+}
+
+#[tokio::test]
+async fn media_keys_are_refused_where_unsupported_or_without_a_player() {
+    let env = env().await;
+    let mut c = env.connect().await;
+    c.next().await;
+    c.send(json!({"action":"mediaPlayPause"})).await;
+    assert_eq!(
+        c.next().await,
+        json!({"action":"mediaPlayPause","response":{"error":"Not supported on this OS"}})
+    );
+
+    env.set(|s| {
+        s.features.media_keys = true;
+        s.media_error = Some(ErrorCode::NotFound);
+    });
+    c.send(json!({"action":"mediaNextTrack"})).await;
+    assert_eq!(
+        c.next().await,
+        json!({"action":"mediaNextTrack","response":{"error":"No media player found"}})
+    );
+
+    env.set(|s| s.media_error = Some(ErrorCode::Internal));
+    c.send(json!({"action":"mediaPreviousTrack"})).await;
+    assert_eq!(
+        c.next().await,
+        json!({"action":"mediaPreviousTrack","response":{"error":"Failed to execute action"}})
+    );
+    assert!(env.calls().is_empty());
 }
 
 // Device actions come with #12. These tests plug a stand-in ("things") into the extension points to

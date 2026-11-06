@@ -24,10 +24,16 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PLAY_PAUSE,
+    VK_MEDIA_PREV_TRACK,
+};
 use windows::Win32::UI::Shell::SHLoadIndirectString;
 
 use super::{
     AppSession, AudioError, AudioResult, Backend, Capabilities, Device, ErrorCode, Features,
+    MediaKey,
 };
 use crate::apps::app_id;
 use crate::volume::{percent_to_scalar, scalar_to_percent};
@@ -299,6 +305,31 @@ fn pick_name(session: Option<&str>, executable: &str) -> String {
     }
 }
 
+/// Presses and releases a key, like a keyboard does: Windows sends media keys to the player that
+/// handles them (the one shown in the volume flyout). Windows silently drops input sent while an
+/// elevated window has the focus.
+fn press_key(key: VIRTUAL_KEY) -> AudioResult<()> {
+    let input = |flags: KEYBD_EVENT_FLAGS| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: key,
+                wScan: 0,
+                dwFlags: KEYEVENTF_EXTENDEDKEY | flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let inputs = [input(KEYBD_EVENT_FLAGS(0)), input(KEYEVENTF_KEYUP)];
+    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    if sent as usize == inputs.len() {
+        Ok(())
+    } else {
+        Err(map_err(WinError::from_thread()))
+    }
+}
+
 fn enumerator() -> AudioResult<IMMDeviceEnumerator> {
     unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }.map_err(map_err)
 }
@@ -401,8 +432,18 @@ impl Backend for Wasapi {
         Features {
             apps_volume: available,
             apps_mute: available,
+            // Key presses go to the user's session, whatever the audio service does.
+            media_keys: true,
             ..Features::default()
         }
+    }
+
+    fn press_media_key(&mut self, key: MediaKey) -> AudioResult<()> {
+        press_key(match key {
+            MediaKey::PlayPause => VK_MEDIA_PLAY_PAUSE,
+            MediaKey::Next => VK_MEDIA_NEXT_TRACK,
+            MediaKey::Previous => VK_MEDIA_PREV_TRACK,
+        })
     }
 
     fn list_app_sessions(&mut self) -> AudioResult<Vec<AppSession>> {

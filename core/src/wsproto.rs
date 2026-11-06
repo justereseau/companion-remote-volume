@@ -27,6 +27,7 @@ pub mod errors {
     pub const NOT_SUPPORTED: &str = "Not supported on this OS";
     pub const DEVICE_NOT_FOUND: &str = "Device not found";
     pub const APP_NOT_FOUND: &str = "App not found";
+    pub const NO_MEDIA_PLAYER: &str = "No media player found";
     pub const EXECUTION_FAILED: &str = "Failed to execute action";
     pub const BAD_MESSAGE: &str = "Failed to process message";
     pub const INVALID_ACTION: &str = "Invalid action";
@@ -188,6 +189,20 @@ pub const APP_ACTIONS: [ActionSpec; 7] = [
     app_mute("toggleAppMute"),
 ];
 
+const fn media(name: &'static str) -> ActionSpec {
+    ActionSpec {
+        requires: Some("media.keys"),
+        ..ActionSpec::new(name)
+    }
+}
+
+/// Media keys (protocol v2): no value, no reply on success, and no state to push.
+pub const MEDIA_ACTIONS: [ActionSpec; 3] = [
+    media("mediaPlayPause"),
+    media("mediaNextTrack"),
+    media("mediaPreviousTrack"),
+];
+
 /// One validated client message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Message {
@@ -286,6 +301,7 @@ pub fn capabilities_json(features: &Features) -> Value {
         "protocolVersion": PROTOCOL_VERSION,
         "outputDevices": { "list": features.devices_list, "select": features.devices_select },
         "apps": { "volume": features.apps_volume, "mute": features.apps_mute },
+        "media": { "keys": features.media_keys },
     })
 }
 
@@ -298,6 +314,7 @@ pub fn has_capability(features: &Features, path: &str) -> bool {
         "outputDevices.select" => features.devices_select,
         "apps.volume" => features.apps_volume,
         "apps.mute" => features.apps_mute,
+        "media.keys" => features.media_keys,
         _ => false,
     }
 }
@@ -753,11 +770,11 @@ mod tests {
         let none = capabilities_json(&Features::default());
         assert_eq!(
             none,
-            json!({"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false}})
+            json!({"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false}})
         );
         assert_eq!(
             none.to_string(),
-            r#"{"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false}}"#
+            r#"{"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false}}"#
         );
         let some = Features {
             apps_volume: true,
@@ -768,7 +785,14 @@ mod tests {
         assert!(has_capability(&some, "apps.volume"));
         assert!(has_capability(&some, "outputDevices.select"));
         assert!(!has_capability(&some, "apps.mute"));
+        assert!(!has_capability(&some, "media.keys"));
         assert!(!has_capability(&some, "nope.nothing"));
+        let media = Features {
+            media_keys: true,
+            ..Features::default()
+        };
+        assert_eq!(capabilities_json(&media)["media"]["keys"], true);
+        assert!(has_capability(&media, "media.keys"));
     }
 
     #[test]
