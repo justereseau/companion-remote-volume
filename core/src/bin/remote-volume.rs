@@ -8,6 +8,7 @@ use std::process::{Command, ExitCode};
 use std::sync::Arc;
 
 use remote_volume_core::audio::AudioHandle;
+use remote_volume_core::backend;
 use remote_volume_core::cli::{parse_args, Command as Cli, Options, HELP};
 use remote_volume_core::config::{config_dir, legacy_candidates, Loaded, Store};
 use remote_volume_core::log::{Log, StderrLog};
@@ -96,6 +97,9 @@ fn run(options: Options) -> Result<(), String> {
             "Companion connects to ws://<this computer>:{}",
             address.port()
         ));
+        if backend::watch(Box::new(server.change_notifier())) {
+            log.info("Watching for volume changes made in other apps.");
+        }
 
         let app = Arc::new(SettingsApp::new(server.clone(), store, config, log.clone()));
         let settings = SettingsHttp::start(

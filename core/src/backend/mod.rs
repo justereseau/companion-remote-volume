@@ -115,7 +115,7 @@ impl Capabilities {
 }
 
 /// Features of the WebSocket protocol v2 (per-app audio, device selection) that this machine
-/// supports right now. No platform backend implements them yet, so every backend reports none.
+/// supports right now. Linux (Pulse) reports per-app audio; the other backends report none yet.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Features {
     pub devices_list: bool,
@@ -159,6 +159,20 @@ fn unsupported_apps() -> AudioError {
         ErrorCode::Unsupported,
         "per-app audio is not supported on this OS",
     )
+}
+
+/// Starts watching the OS for audio changes made outside this app (another mixer, an app starting
+/// or stopping, the default device changing), on a thread of its own, and calls `changed` after
+/// each; the caller reads the new state itself. Returns false where the backend has no change
+/// events (Windows and macOS for now): polling is then the only way to see such changes.
+pub fn watch(changed: Box<dyn Fn() + Send>) -> bool {
+    #[cfg(target_os = "linux")]
+    return pulse::watch(changed);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = changed;
+        false
+    }
 }
 
 /// The backend for the OS this binary was built for.

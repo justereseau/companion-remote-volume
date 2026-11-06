@@ -7,12 +7,13 @@ A small native app that lets you control the OS audio volume over a WebSocket co
 - Get, set, increase or decrease the audio volume
 - Get, mute, unmute or toggle the mute state of the audio volume
 - Get the current audio output device
-- Per-app volume and mute ([protocol v2](#protocol-v2)): the protocol is in place, the Linux and Windows backends are in progress, so no OS reports it as supported yet
+- Per-app volume and mute ([protocol v2](#protocol-v2)) on Linux (PulseAudio / PipeWire); Windows is in progress
 
 Connected clients are kept in sync automatically:
 
 - **After every command** (`setVolume`, `increaseVolume`, `decreaseVolume`, `mute`, `unmute`, `toggleMute`) the app reads the resulting state and sends what changed to **all** connected clients straight away. This happens whether or not polling is enabled.
-- **Polling** (optional, configurable interval) also picks up changes made outside the app, such as media keys, the Windows mixer or other apps.
+- **On Linux**, changes made outside the app (media keys, pavucontrol, an app starting or stopping, the default output changing) are pushed straight away: the app subscribes to PulseAudio / PipeWire change events. It reconnects by itself when the sound server restarts.
+- **Polling** (optional, configurable interval) picks up such changes on Windows and macOS, such as media keys, the Windows mixer or other apps. On Linux it is not needed.
 - When a client connects, it receives the full state. If anything changed since the last update, the other clients get those changes too.
 
 Updates contain only the fields that changed, one message per field, for example `{ "volume": 42 }` or `{ "muted": true }`.
@@ -247,7 +248,7 @@ Like the v1 commands, the changing actions send no reply: the new `apps` list is
 
 | OS | Volume | Mute | Status |
 |---|---|---|---|
-| Linux, PulseAudio / PipeWire | yes | yes | in progress ([#18](https://github.com/Justereseau/companion-remote-volume/issues/18)) |
+| Linux, PulseAudio / PipeWire | yes | yes | supported. An app is a program's playback streams; changes made in other mixers (pavucontrol) are pushed without polling |
 | Windows | yes | yes | in progress ([#17](https://github.com/Justereseau/companion-remote-volume/issues/17)) |
 | macOS | no | maybe on 14.2+ | being investigated ([#19](https://github.com/Justereseau/companion-remote-volume/issues/19)) |
 | Linux, ALSA only | no | no | not possible |
