@@ -16,9 +16,9 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Map, Value};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch, Notify};
 use tokio::task::JoinHandle;
-use tokio::time::{interval, timeout, MissedTickBehavior};
+use tokio::time::{interval, sleep, timeout, MissedTickBehavior};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
@@ -74,6 +74,10 @@ pub struct ApplyResult {
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long to wait after an OS change notification before reading the state: one change (an app
+/// starting) often comes as a burst of notifications, and they are read in one pass.
+const CHANGE_SETTLE: Duration = Duration::from_millis(50);
+
 #[derive(Debug)]
 enum Kick {
     /// Close handshake with this code and reason.
@@ -121,6 +125,9 @@ struct Inner {
     refresh_again: AtomicBool,
     running: Mutex<Option<Running>>,
     polling: Mutex<Option<JoinHandle<()>>>,
+    /// Signalled by the OS backend's change watcher (see [`Server::change_notifier`]).
+    changes: Arc<Notify>,
+    change_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 #[derive(Clone)]
@@ -163,6 +170,8 @@ impl Server {
                 refresh_again: AtomicBool::new(false),
                 running: Mutex::new(None),
                 polling: Mutex::new(None),
+                changes: Arc::new(Notify::new()),
+                change_task: Mutex::new(None),
             }),
         }
     }
@@ -198,12 +207,16 @@ impl Server {
             }
         ));
         self.start_polling();
+        self.start_change_task();
         Ok(addr)
     }
 
     /// Stop listening and disconnect every client.
     pub async fn stop(&self) {
         self.stop_polling();
+        if let Some(task) = self.inner.change_task.lock().unwrap().take() {
+            task.abort();
+        }
         let running = self.inner.running.lock().unwrap().take();
         if let Some(running) = running {
             let _ = running.stop.send(true);
@@ -290,6 +303,29 @@ impl Server {
     /// commands does not become a burst of OS calls. Returns when the state is up to date.
     pub async fn refresh(&self) {
         self.inner.refresh().await;
+    }
+
+    /// A function for the OS backend's change watcher (see [`crate::backend::watch`]) to call,
+    /// from any thread, whenever something may have changed outside this app. While the server
+    /// runs, each call (or burst of calls) leads to one refresh, so external changes reach clients
+    /// without polling.
+    pub fn change_notifier(&self) -> impl Fn() + Send + Sync + 'static {
+        let changes = self.inner.changes.clone();
+        move || changes.notify_one()
+    }
+
+    fn start_change_task(&self) {
+        let inner = self.inner.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                inner.changes.notified().await;
+                sleep(CHANGE_SETTLE).await;
+                inner.refresh().await;
+            }
+        });
+        if let Some(previous) = self.inner.change_task.lock().unwrap().replace(task) {
+            previous.abort();
+        }
     }
 
     fn start_polling(&self) {

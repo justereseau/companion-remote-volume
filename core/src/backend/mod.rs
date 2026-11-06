@@ -161,6 +161,20 @@ fn unsupported_apps() -> AudioError {
     )
 }
 
+/// Starts watching the OS for audio changes made outside this app (another mixer, an app starting
+/// or stopping, the default device changing), on a thread of its own, and calls `changed` after
+/// each; the caller reads the new state itself. Returns false where the backend has no change
+/// events (Windows and macOS for now): polling is then the only way to see such changes.
+pub fn watch(changed: Box<dyn Fn() + Send>) -> bool {
+    #[cfg(target_os = "linux")]
+    return pulse::watch(changed);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = changed;
+        false
+    }
+}
+
 /// The backend for the OS this binary was built for.
 pub fn create() -> Box<dyn Backend> {
     #[cfg(target_os = "windows")]

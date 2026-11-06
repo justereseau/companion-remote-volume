@@ -6,13 +6,16 @@
 //! Per-app audio: every playback stream (sink-input) belongs to the app named by its
 //! `application.process.binary` property, or its `application.name` when there is none.
 //!
-//! Spike simplification: each call opens a fresh connection (a few ms). The persistent
-//! connection with change subscriptions comes with the events work.
+//! Commands open a fresh connection each (a few ms). Changes made elsewhere are watched on one
+//! long-lived connection of their own ([`watch`]), which reconnects when the server restarts.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::thread;
+use std::time::Duration;
 
 use libpulse_binding::callbacks::ListResult;
+use libpulse_binding::context::subscribe::InterestMaskSet;
 use libpulse_binding::context::{Context, FlagSet, State};
 use libpulse_binding::mainloop::standard::{IterateResult, Mainloop};
 use libpulse_binding::operation::{Operation, State as OpState};
@@ -273,6 +276,57 @@ impl Conn {
     }
 }
 
+/// How long the watcher waits before connecting again after losing (or not finding) the server.
+const RECONNECT_DELAY: Duration = Duration::from_secs(2);
+
+/// See [`super::watch`]: sinks (volume, mute, plugged in or out), playback streams (apps) and the
+/// server (default sink), on a thread with a connection of its own. Without a server it keeps
+/// trying, so a server started later (or restarted) is picked up.
+pub fn watch(changed: Box<dyn Fn() + Send>) -> bool {
+    thread::Builder::new()
+        .name("audio-events".into())
+        .spawn(move || {
+            let changed: Rc<dyn Fn()> = Rc::new(changed);
+            loop {
+                // Whatever the reason it ended, try again shortly.
+                let _ = listen(&changed);
+                thread::sleep(RECONNECT_DELAY);
+            }
+        })
+        .is_ok()
+}
+
+/// Connects, subscribes and reports changes until the connection ends.
+fn listen(changed: &Rc<dyn Fn()>) -> Result<(), String> {
+    let mut conn = Conn::open()?;
+    // Anything may have changed while not watching (first start, server restart).
+    changed();
+    let notify = changed.clone();
+    conn.context
+        .set_subscribe_callback(Some(Box::new(move |_, _, _| notify())));
+    let mask = InterestMaskSet::SINK | InterestMaskSet::SINK_INPUT | InterestMaskSet::SERVER;
+    let subscribed = Rc::new(Cell::new(false));
+    let flag = subscribed.clone();
+    let op = conn
+        .context
+        .subscribe(mask, move |success| flag.set(success));
+    conn.wait(op).map_err(|e| e.message)?;
+    if !subscribed.get() {
+        return Err("PulseAudio refused the subscription".into());
+    }
+    loop {
+        match conn.mainloop.iterate(true) {
+            IterateResult::Success(_) => {}
+            IterateResult::Quit(_) | IterateResult::Err(_) => {
+                return Err("the PulseAudio main loop stopped".into())
+            }
+        }
+        if matches!(conn.context.get_state(), State::Failed | State::Terminated) {
+            return Err("the PulseAudio connection ended".into());
+        }
+    }
+}
+
 pub struct Pulse;
 
 impl Pulse {
@@ -497,5 +551,18 @@ mod tests {
             .set_app_muted("no-such-app-rv-test", true)
             .unwrap_err();
         assert_eq!(missing.code, ErrorCode::NotFound);
+
+        // Changes are reported: once on connecting, then for a stream volume change.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = std::sync::Mutex::new(tx);
+        assert!(watch(Box::new(move || {
+            let _ = tx.lock().unwrap().send(());
+        })));
+        let wait = std::time::Duration::from_secs(5);
+        rx.recv_timeout(wait).expect("a notification on connecting");
+        while rx.try_recv().is_ok() {}
+        backend.set_app_volume("pacat", 64).expect("set volume");
+        rx.recv_timeout(wait)
+            .expect("a notification for the volume change");
     }
 }
