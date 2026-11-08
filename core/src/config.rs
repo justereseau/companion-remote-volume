@@ -47,11 +47,18 @@ pub struct AppsConfig {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdatesConfig {
+    /// An installed app checks for new releases and installs them by itself.
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub websocket: WsConfig,
     pub polling: Polling,
     pub apps: AppsConfig,
+    pub updates: UpdatesConfig,
 }
 
 impl Default for Config {
@@ -68,6 +75,7 @@ impl Default for Config {
                 interval: 1000,
             },
             apps: AppsConfig { enabled: true },
+            updates: UpdatesConfig { enabled: true },
         }
     }
 }
@@ -84,6 +92,7 @@ impl Config {
             },
             "polling": { "enabled": self.polling.enabled, "interval": self.polling.interval },
             "apps": { "enabled": self.apps.enabled },
+            "updates": { "enabled": self.updates.enabled },
             "version": CONFIG_VERSION,
         })
     }
@@ -158,6 +167,10 @@ pub fn sanitize(input: &Value, previous: &Config) -> Config {
         .and_then(Value::as_object)
         .unwrap_or(&empty);
     let apps = src.get("apps").and_then(Value::as_object).unwrap_or(&empty);
+    let updates = src
+        .get("updates")
+        .and_then(Value::as_object)
+        .unwrap_or(&empty);
 
     let host = match ws.get("host").and_then(Value::as_str) {
         Some(h) if BIND_ADDRESSES.contains(&h) => h.to_string(),
@@ -191,6 +204,12 @@ pub fn sanitize(input: &Value, previous: &Config) -> Config {
                 .get("enabled")
                 .and_then(Value::as_bool)
                 .unwrap_or(previous.apps.enabled),
+        },
+        updates: UpdatesConfig {
+            enabled: updates
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(previous.updates.enabled),
         },
     }
 }

@@ -4,17 +4,25 @@
 //! serves a settings page on `http://127.0.0.1:<settings port>/`.
 
 use std::env;
+use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 use std::sync::Arc;
+use std::time::Duration;
 
 use remote_volume_core::audio::AudioHandle;
 use remote_volume_core::backend;
 use remote_volume_core::cli::{parse_args, Command as Cli, Options, HELP};
 use remote_volume_core::config::{config_dir, legacy_candidates, Loaded, Store};
-use remote_volume_core::log::{Log, StderrLog};
+use remote_volume_core::install;
+use remote_volume_core::log::{FileLog, Log, StderrLog};
 use remote_volume_core::server::Server;
 use remote_volume_core::settings::{SettingsApp, SettingsHttp};
+use remote_volume_core::update::{self, UpdateHandle, Updater};
 use remote_volume_core::VERSION;
+use tokio::sync::Notify;
+
+const BIND_ATTEMPTS: u32 = 30;
+const BIND_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 fn open_in_browser(url: &str) {
     let result = if cfg!(windows) {
@@ -37,6 +45,15 @@ fn main() -> ExitCode {
     );
     let options = match parsed {
         Ok(Cli::Run(options)) => options,
+        Ok(Cli::Install) => {
+            return report(install::install().map(|program| {
+                println!("Remote Volume is installed in {}", program.display());
+                println!("It runs now and starts at every login. Settings: http://127.0.0.1:2502/");
+            }))
+        }
+        Ok(Cli::Uninstall) => {
+            return report(install::uninstall().map(|()| println!("Remote Volume is removed.")))
+        }
         Ok(Cli::Help) => {
             print!("{HELP}");
             return ExitCode::SUCCESS;
@@ -50,7 +67,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match run(options) {
+    report(run(options))
+}
+
+fn report(result: Result<(), String>) -> ExitCode {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("ERROR {message}");
@@ -59,8 +80,40 @@ fn main() -> ExitCode {
     }
 }
 
+/// The program to keep up to date: this one, when it runs as the installed service of a release.
+fn managed_program(service: bool) -> Option<PathBuf> {
+    let program = env::current_exe().ok()?;
+    (service && install::is_installed_program(&program)).then_some(program)
+}
+
+/// Starts the update loop. `restart` is signalled when a new program is in place.
+fn start_updates(
+    program: PathBuf,
+    server: &Server,
+    restart: Arc<Notify>,
+    log: &Arc<dyn Log>,
+) -> Option<UpdateHandle> {
+    update::clean_up(&program);
+    let updater = Updater::for_this_program(program, log.clone())?;
+    let settings = server.clone();
+    let enabled = move || settings.config().updates.enabled;
+    match update::spawn(updater, enabled, move || restart.notify_one()) {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            log.error(&format!("Could not start the updates: {error}"));
+            None
+        }
+    }
+}
+
 fn run(options: Options) -> Result<(), String> {
-    let log: Arc<dyn Log> = Arc::new(StderrLog);
+    let log: Arc<dyn Log> = if options.service {
+        // No terminal to read: without a file there would be no trace of what happened.
+        let path = options.config_dir.join("remote-volume.log");
+        Arc::new(FileLog::open(&path).map_err(|e| format!("could not open {path:?}: {e}"))?)
+    } else {
+        Arc::new(StderrLog)
+    };
     log.info(&format!("Remote Volume {} is starting...", VERSION));
 
     let store = Store::new(&options.config_dir);
@@ -87,12 +140,24 @@ fn run(options: Options) -> Result<(), String> {
 
     runtime.block_on(async {
         let server = Server::new(AudioHandle::spawn_default(), config.clone(), log.clone());
-        let address = server.start().await.map_err(|e| {
-            format!(
-                "could not listen on {}:{}: {e}",
-                config.websocket.host, config.websocket.port
-            )
-        })?;
+        // A service retries: the previous version may still be exiting after an update.
+        let attempts = if options.service { BIND_ATTEMPTS } else { 1 };
+        let mut attempt = 1;
+        let address = loop {
+            match server.start().await {
+                Ok(address) => break address,
+                Err(_) if attempt < attempts => {
+                    attempt += 1;
+                    tokio::time::sleep(BIND_RETRY_DELAY).await;
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "could not listen on {}:{}: {e}",
+                        config.websocket.host, config.websocket.port
+                    ))
+                }
+            }
+        };
         log.info(&format!(
             "Companion connects to ws://<this computer>:{}",
             address.port()
@@ -101,29 +166,55 @@ fn run(options: Options) -> Result<(), String> {
             log.info("Watching for volume changes made in other apps.");
         }
 
-        let app = Arc::new(SettingsApp::new(server.clone(), store, config, log.clone()));
-        let settings = SettingsHttp::start(
-            app,
-            options.settings_port,
-            tokio::runtime::Handle::current(),
-        )
-        .map_err(|e| {
-            format!(
-                "could not serve the settings page on 127.0.0.1:{}: {e}",
-                options.settings_port
-            )
-        })?;
+        let restart = Arc::new(Notify::new());
+        let program = managed_program(options.service);
+        let mut app = SettingsApp::new(server.clone(), store, config, log.clone());
+        if let Some(program) = program.clone() {
+            if let Some(updates) = start_updates(program, &server, restart.clone(), &log) {
+                app = app.with_updates(updates);
+            }
+        }
+        let app = Arc::new(app);
+        let mut attempt = 1;
+        let settings = loop {
+            match SettingsHttp::start(
+                app.clone(),
+                options.settings_port,
+                tokio::runtime::Handle::current(),
+            ) {
+                Ok(settings) => break settings,
+                Err(_) if attempt < attempts => {
+                    attempt += 1;
+                    tokio::time::sleep(BIND_RETRY_DELAY).await;
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "could not serve the settings page on 127.0.0.1:{}: {e}",
+                        options.settings_port
+                    ))
+                }
+            }
+        };
         log.info(&format!("Settings: {}", settings.url()));
         if options.open {
             open_in_browser(&settings.url());
         }
 
-        tokio::signal::ctrl_c()
-            .await
-            .map_err(|e| format!("could not wait for Ctrl+C: {e}"))?;
+        let updated = tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                signal.map_err(|e| format!("could not wait for Ctrl+C: {e}"))?;
+                false
+            }
+            () = restart.notified() => true,
+        };
         log.info("Shutting down.");
         settings.stop();
         server.stop().await;
+        if updated {
+            if let Some(program) = &program {
+                install::restart_service(program)?;
+            }
+        }
         Ok(())
     })
 }

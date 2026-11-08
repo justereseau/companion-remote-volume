@@ -13,6 +13,7 @@ use remote_volume_core::config::{Config, Store};
 use remote_volume_core::log::NoLog;
 use remote_volume_core::server::Server;
 use remote_volume_core::settings::{SettingsApp, SettingsHttp};
+use remote_volume_core::update::{spawn, Fetch, FetchError, Updater, Version};
 use serde_json::{json, Value};
 
 struct Silent;
@@ -458,4 +459,125 @@ async fn bad_bodies_are_rejected() {
         200
     );
     assert_eq!(get(&p, "/api/config").json(), before);
+}
+
+fn post_update(p: &Page, origin: Option<&str>) -> Response {
+    let headers: Vec<(&str, &str)> = origin.iter().map(|o| ("Origin", *o)).collect();
+    request(
+        p.port,
+        "POST",
+        "/api/update",
+        Some(&format!("127.0.0.1:{}", p.port)),
+        &headers,
+        b"",
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_that_is_not_installed_reports_that_it_does_not_update_itself() {
+    let p = page("update-unmanaged").await;
+    let status = get(&p, "/api/update").json();
+    assert_eq!(status["managed"], false);
+    assert_eq!(status["current"], remote_volume_core::VERSION);
+    let origin = format!("http://127.0.0.1:{}", p.port);
+    assert_eq!(post_update(&p, Some(&origin)).status, 409);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_update_can_only_be_started_from_the_page_itself() {
+    let p = page("update-origin").await;
+    assert_eq!(post_update(&p, None).status, 403);
+    assert_eq!(post_update(&p, Some("http://evil.example")).status, 403);
+    let delete = request(
+        p.port,
+        "DELETE",
+        "/api/update",
+        Some(&format!("127.0.0.1:{}", p.port)),
+        &[],
+        b"",
+    );
+    assert_eq!(delete.status, 405);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn automatic_updates_are_on_by_default_and_can_be_turned_off() {
+    let p = page("update-setting").await;
+    assert_eq!(get(&p, "/api/config").json()["updates"]["enabled"], true);
+    let saved = put(&p, &json!({ "updates": { "enabled": false } }));
+    assert_eq!(saved.status, 200);
+    assert_eq!(saved.json()["config"]["updates"]["enabled"], false);
+    assert!(!p.server.config().updates.enabled);
+    assert!(get(&p, "/").body.contains("enableUpdates"));
+}
+
+/// No release offers anything: the check runs and ends as up to date.
+struct NoRelease;
+
+impl Fetch for NoRelease {
+    fn get(&self, _url: &str, _limit: u64) -> Result<Vec<u8>, FetchError> {
+        Err(FetchError::NotFound)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_installed_program_checks_when_asked_and_reports_how_it_went() {
+    let config = {
+        let mut config = Config::default();
+        config.websocket.port = 0;
+        config.websocket.host = "127.0.0.1".into();
+        config
+    };
+    let log = Arc::new(NoLog);
+    let server = Server::new(
+        AudioHandle::spawn(|| Box::new(Silent)),
+        config.clone(),
+        log.clone(),
+    );
+    let updater = Updater::new(
+        Box::new(NoRelease),
+        "https://example.test/releases",
+        &[0; 32],
+        "test-os",
+        Version(1, 2, 3),
+        PathBuf::from("not-used"),
+        Box::new(|_, _| Ok(())),
+        log.clone(),
+    );
+    let updates = spawn(updater, || false, || ()).unwrap();
+    let dir = temp_dir("update-managed");
+    let app =
+        Arc::new(SettingsApp::new(server, Store::new(&dir), config, log).with_updates(updates));
+    let http = SettingsHttp::start(app, 0, tokio::runtime::Handle::current()).unwrap();
+    let port = http.port;
+    let host = format!("127.0.0.1:{port}");
+    let origin = format!("http://{host}");
+
+    let status = request(port, "GET", "/api/update", Some(&host), &[], b"").json();
+    assert_eq!(status["managed"], true);
+    assert_eq!(status["current"], "1.2.3");
+
+    let started = request(
+        port,
+        "POST",
+        "/api/update",
+        Some(&host),
+        &[("Origin", &origin)],
+        b"",
+    );
+    assert_eq!(started.status, 202);
+
+    let start = std::time::Instant::now();
+    loop {
+        let status = request(port, "GET", "/api/update", Some(&host), &[], b"").json();
+        if status["state"] == "up-to-date" {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "{status}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    http.stop();
+    let _ = fs::remove_dir_all(&dir);
 }

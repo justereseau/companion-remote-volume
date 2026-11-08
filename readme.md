@@ -28,9 +28,27 @@ Updates contain only the fields that changed, one message per field, for example
 
 ## Installation
 
-Download the archive for your OS from the [latest release](https://github.com/justereseau/companion-remote-volume/releases/latest), unpack it and run `remote-volume`. There is no installer and no tray icon: the app runs in a terminal window until you stop it with Ctrl+C. To start it with your computer, use your OS's own mechanism (Task Scheduler on Windows, a `launchd` agent on macOS, a `systemd` user service on Linux).
+The installers set the app up for your user, with no admin rights: it runs in the background, starts at every login and [keeps itself up to date](#updates). Your settings stay when you upgrade or uninstall.
 
-macOS: the binary is not signed. If Gatekeeper blocks it, run `xattr -d com.apple.quarantine remote-volume` once.
+**Windows:** download and run `remote-volume-setup-windows-x64.exe` from the [latest release](https://github.com/justereseau/companion-remote-volume/releases/latest). The setup is not signed, so SmartScreen may warn about it (**More info**, **Run anyway**). When the firewall asks, allow Remote Volume on private networks, or Companion cannot connect from another computer. Uninstall it from **Settings**, **Apps**.
+
+**Linux and macOS (Apple silicon):**
+
+```sh
+curl -fsSL https://github.com/justereseau/companion-remote-volume/releases/latest/download/install.sh | sh
+```
+
+On Linux it needs a systemd user session and PulseAudio's client library (`sudo apt install libpulse0`). To uninstall, run the installed program with `--uninstall`: `~/.local/share/remote-volume/remote-volume` on Linux, `~/Library/Application Support/RemoteVolume/remote-volume` on macOS.
+
+The app has no tray icon. Its settings are at <http://127.0.0.1:2502/>, and it logs to `remote-volume.log` next to its `config.json`.
+
+**Without installing:** the archives in the release hold just the program. Unpack one and run `remote-volume`: it runs in a terminal window until you stop it with Ctrl+C, and does not update itself. macOS: the binary is not signed. If Gatekeeper blocks it, run `xattr -d com.apple.quarantine remote-volume` once. `remote-volume --install` turns any copy into an installed one.
+
+### Updates
+
+An installed app checks the GitHub releases once a day, a few minutes after it starts, and installs a newer version by itself. Installing restarts the app, so connected clients drop for a moment and reconnect. Turn **Install updates automatically** off on the settings page to stop this; **Update now** there still works.
+
+An update is installed only if the release's manifest carries a valid signature from the release key built into the app, its version is newer than the running one, the download matches the checksum in the manifest, and the new program runs on this computer and reports that version. Otherwise nothing changes, and the reason is on the settings page and in the log. Updates cannot be triggered over the WebSocket, only from the settings page on the computer itself.
 
 ## Setup
 

@@ -20,6 +20,7 @@ use tokio::sync::Mutex;
 use crate::config::{sanitize, Config, Store};
 use crate::log::Log;
 use crate::server::Server;
+use crate::update::UpdateHandle;
 
 const PAGE: &str = include_str!("../assets/settings.html");
 const SCRIPT: &str = include_str!("../assets/settings.js");
@@ -36,6 +37,8 @@ pub struct SettingsApp {
     store: Store,
     config: Mutex<Config>,
     log: Arc<dyn Log>,
+    /// Only an installed service updates itself.
+    updates: Option<UpdateHandle>,
 }
 
 impl SettingsApp {
@@ -45,6 +48,19 @@ impl SettingsApp {
             store,
             config: Mutex::new(config),
             log,
+            updates: None,
+        }
+    }
+
+    pub fn with_updates(mut self, updates: UpdateHandle) -> SettingsApp {
+        self.updates = Some(updates);
+        self
+    }
+
+    fn update_status(&self) -> Value {
+        match &self.updates {
+            Some(updates) => updates.status_json(),
+            None => json!({ "managed": false, "current": crate::VERSION }),
         }
     }
 
@@ -129,6 +145,12 @@ pub async fn handle_request(app: &SettingsApp, req: &Req, port: u16) -> Resp {
     {
         return text(403, "Forbidden: unexpected Host header");
     }
+    // Browsers send Origin on every PUT and POST; a missing or foreign one is not our page.
+    let origin_ok = req
+        .origin
+        .as_deref()
+        .and_then(|o| o.strip_prefix("http://"))
+        .is_some_and(|o| hosts.iter().any(|a| a.eq_ignore_ascii_case(o)));
     match (req.method.as_str(), req.path.as_str()) {
         ("GET" | "HEAD", "/" | "/index.html") => Resp {
             status: 200,
@@ -142,12 +164,6 @@ pub async fn handle_request(app: &SettingsApp, req: &Req, port: u16) -> Resp {
         },
         ("GET" | "HEAD", "/api/config") => json_resp(200, &app.config().await.to_json()),
         ("PUT", "/api/config") => {
-            // Browsers send Origin on every PUT; a missing or foreign one is not our page.
-            let origin_ok = req
-                .origin
-                .as_deref()
-                .and_then(|o| o.strip_prefix("http://"))
-                .is_some_and(|o| hosts.iter().any(|a| a.eq_ignore_ascii_case(o)));
             if !origin_ok {
                 return text(403, "Forbidden: unexpected Origin header");
             }
@@ -173,7 +189,23 @@ pub async fn handle_request(app: &SettingsApp, req: &Req, port: u16) -> Resp {
                 Err(error) => json_resp(500, &json!({ "error": error })),
             }
         }
-        (_, "/" | "/index.html" | "/settings.js" | "/api/config") => {
+        ("GET" | "HEAD", "/api/update") => json_resp(200, &app.update_status()),
+        ("POST", "/api/update") => {
+            if !origin_ok {
+                return text(403, "Forbidden: unexpected Origin header");
+            }
+            match &app.updates {
+                Some(updates) => {
+                    updates.check_now();
+                    json_resp(202, &app.update_status())
+                }
+                None => json_resp(
+                    409,
+                    &json!({ "error": "Only an installed app can update itself" }),
+                ),
+            }
+        }
+        (_, "/" | "/index.html" | "/settings.js" | "/api/config" | "/api/update") => {
             text(405, "Method not allowed")
         }
         _ => text(404, "Not found"),

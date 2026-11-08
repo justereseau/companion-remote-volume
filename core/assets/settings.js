@@ -17,6 +17,7 @@ const fill = (config) => {
 	$('pollingInterval').value = config.polling.interval
 	$('pollingInterval').disabled = !config.polling.enabled
 	$('enableApps').checked = config.apps.enabled
+	$('enableUpdates').checked = config.updates.enabled
 }
 
 const load = async () => {
@@ -56,6 +57,7 @@ const save = async () => {
 		},
 		polling: { enabled: $('enablePolling').checked, interval },
 		apps: { enabled: $('enableApps').checked },
+		updates: { enabled: $('enableUpdates').checked },
 	}
 	try {
 		const response = await fetch('/api/config', {
@@ -72,6 +74,51 @@ const save = async () => {
 	}
 }
 
+const BUSY_STATES = ['checking', 'downloading', 'restarting']
+
+const showUpdate = (update) => {
+	const managed = update.managed === true
+	$('enableUpdates').disabled = !managed
+	$('updateNow').disabled = !managed || BUSY_STATES.includes(update.state)
+	if (!managed) {
+		$('updateStatus').textContent = `Version ${update.current}. Only an app set up with the installer updates itself.`
+		return
+	}
+	const message = update.message ? ` ${update.message}` : ''
+	$('updateStatus').textContent = `Version ${update.current}.${message}`
+}
+
+const refreshUpdate = async () => {
+	let update
+	try {
+		const response = await fetch('/api/update', { cache: 'no-store' })
+		if (!response.ok) throw new Error(`HTTP ${response.status}`)
+		update = await response.json()
+	} catch {
+		// The app restarts at the end of an update, and the page reconnects on its own.
+		$('updateStatus').textContent = 'Waiting for the app to come back...'
+		setTimeout(refreshUpdate, 2000)
+		return
+	}
+	showUpdate(update)
+	if (BUSY_STATES.includes(update.state)) setTimeout(refreshUpdate, 1000)
+}
+
+const updateNow = async () => {
+	$('updateNow').disabled = true
+	$('updateStatus').textContent = 'Checking for updates...'
+	try {
+		const response = await fetch('/api/update', { method: 'POST' })
+		const result = await response.json().catch(() => ({}))
+		if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`)
+		setTimeout(refreshUpdate, 500)
+	} catch (error) {
+		$('updateStatus').textContent = `Could not start the update: ${error.message}`
+		$('updateNow').disabled = false
+	}
+}
+
+$('updateNow').addEventListener('click', updateNow)
 $('save').addEventListener('click', save)
 $('port').addEventListener('keydown', (event) => {
 	if (event.key === 'Enter') save()
@@ -84,3 +131,4 @@ $('generateToken').addEventListener('click', () => {
 })
 
 load()
+refreshUpdate()

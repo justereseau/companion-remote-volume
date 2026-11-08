@@ -13,6 +13,9 @@ Options:
   --settings-port <port>  Port of the settings page on 127.0.0.1 (default 2502, env RV_SETTINGS_PORT)
   --config-dir <dir>      Where config.json is kept (env RV_CONFIG_DIR)
   --open                  Open the settings page in the default browser
+  --install               Install for this user, start now and at every login (no admin needed)
+  --uninstall             Stop and remove the installed app; the settings stay
+  --service               Run as the installed service: log to a file, update automatically
   -h, --help              Show this help
   -V, --version           Show the version
 ";
@@ -22,11 +25,15 @@ pub struct Options {
     pub settings_port: u16,
     pub config_dir: PathBuf,
     pub open: bool,
+    /// Started as the installed service (see [`crate::install`]).
+    pub service: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Run(Options),
+    Install,
+    Uninstall,
     Help,
     Version,
 }
@@ -45,6 +52,7 @@ pub fn parse_args(
             .unwrap_or(DEFAULT_SETTINGS_PORT),
         config_dir: default_config_dir,
         open: false,
+        service: false,
     };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -52,6 +60,9 @@ pub fn parse_args(
             "-h" | "--help" => return Ok(Command::Help),
             "-V" | "--version" => return Ok(Command::Version),
             "--open" => options.open = true,
+            "--install" => return Ok(Command::Install),
+            "--uninstall" => return Ok(Command::Uninstall),
+            "--service" => options.service = true,
             "--settings-port" => {
                 let value = args.next().ok_or("--settings-port needs a value")?;
                 options.settings_port =
@@ -76,6 +87,14 @@ mod tests {
             env_port,
             PathBuf::from("default-dir"),
         )
+    }
+
+    #[test]
+    fn install_uninstall_and_service_are_recognised() {
+        assert_eq!(parse(&["--install"], None), Ok(Command::Install));
+        assert_eq!(parse(&["--uninstall"], None), Ok(Command::Uninstall));
+        assert!(!run(parse(&[], None).unwrap()).service);
+        assert!(run(parse(&["--service"], None).unwrap()).service);
     }
 
     fn run(options: Command) -> Options {
