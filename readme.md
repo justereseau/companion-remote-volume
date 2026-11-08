@@ -95,6 +95,7 @@ Releases are managed by [release-please](https://github.com/googleapis/release-p
   1. Open the release PR. It is created with the built-in token, so CI does not start by itself. Go to **Actions → CI → Run workflow**, pick the `release-please--branches--main--components--remote-volume` branch and run it. This produces the required checks.
   2. Merge the release PR. The CI run on `main` creates the `vX.Y.Z` tag and a draft GitHub release, attaches the Windows/macOS/Linux programs, archives, installers, `SHA256SUMS.txt` and the signed update manifest built in that same run, then publishes it.
 - If the run fails before publishing, the release stays a draft that nobody can download. Run **Actions → CI → Run workflow** from the tag (e.g. `v1.4.0`) with `release_tag` set to it.
+- The key that signs the update manifest is the secret `UPDATE_SIGNING_KEY` of the `release` environment, which only `main` and `v*` tags can deploy to. A run from any other branch or tag cannot read it: GitHub stops its publish job before the first step.
 - A published release cannot change: with the repository setting **Immutable releases**, its files and tag are locked, and the workflow refuses to touch it. Only its title and notes can still be edited. To fix a bad release, make a new one. Check a release, or a file you downloaded from it, with:
   ```bash
   gh release verify vX.Y.Z --repo justereseau/companion-remote-volume
