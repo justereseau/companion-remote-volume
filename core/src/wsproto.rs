@@ -311,6 +311,7 @@ pub fn parse_message(raw: &[u8], actions: &[ActionSpec]) -> Result<Message, Reje
 pub fn capabilities_json(features: &Features) -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
+        "version": crate::VERSION,
         "outputDevices": { "list": features.devices_list, "select": features.devices_select },
         "apps": { "volume": features.apps_volume, "mute": features.apps_mute },
         "media": { "keys": features.media_keys },
@@ -784,11 +785,14 @@ mod tests {
         let none = capabilities_json(&Features::default());
         assert_eq!(
             none,
-            json!({"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false},"keyboard":{"functionKeys":false}})
+            json!({"protocolVersion":2,"version":crate::VERSION,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false},"keyboard":{"functionKeys":false}})
         );
         assert_eq!(
             none.to_string(),
-            r#"{"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false},"keyboard":{"functionKeys":false}}"#
+            format!(
+                r#"{{"protocolVersion":2,"version":"{}","outputDevices":{{"list":false,"select":false}},"apps":{{"volume":false,"mute":false}},"media":{{"keys":false}},"keyboard":{{"functionKeys":false}}}}"#,
+                crate::VERSION
+            )
         );
         let some = Features {
             apps_volume: true,
