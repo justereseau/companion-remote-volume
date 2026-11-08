@@ -1,0 +1,2 @@
+core/tests/fixtures/* -text
+installer/install.sh text eol=lf

@@ -9,10 +9,12 @@ pub mod audio;
 pub mod backend;
 pub mod cli;
 pub mod config;
+pub mod install;
 pub mod log;
 pub mod protocol;
 pub mod server;
 pub mod settings;
+pub mod update;
 pub mod volume;
 pub mod wsproto;
 

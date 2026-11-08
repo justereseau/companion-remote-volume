@@ -156,6 +156,20 @@
 				font-size: 14px;
 			}
 
+			.row.update {
+				margin-top: 12px;
+			}
+
+			.row.update button {
+				padding: 8px 14px;
+			}
+
+			button:disabled {
+				background-color: #444444;
+				color: #888888;
+				cursor: not-allowed;
+			}
+
 			#save {
 				width: 100%;
 				margin-top: 4px;
@@ -212,7 +226,7 @@
 			</fieldset>
 
 			<fieldset>
-				<legend>Updates</legend>
+				<legend>Outside changes</legend>
 				<label class="check" for="enablePolling"><input type="checkbox" id="enablePolling" />Poll for outside changes</label>
 				<div class="hint">Picks up changes made outside the app (media keys, the OS mixer). Commands are always pushed to all clients.</div>
 				<label for="pollingInterval">Polling interval (ms)</label>
@@ -223,6 +237,16 @@
 				<legend>Apps</legend>
 				<label class="check" for="enableApps"><input type="checkbox" id="enableApps" />Per-app volume and mute</label>
 				<div class="hint">Lets clients list and control the apps playing audio. They can then see which apps those are.</div>
+			</fieldset>
+
+			<fieldset>
+				<legend>Software updates</legend>
+				<label class="check" for="enableUpdates"><input type="checkbox" id="enableUpdates" />Install updates automatically</label>
+				<div class="hint">Checks once a day. Installing restarts the app, so clients disconnect for a moment.</div>
+				<div class="row update">
+					<button id="updateNow" type="button">Update now</button>
+				</div>
+				<div id="updateStatus" class="hint" role="status"></div>
 			</fieldset>
 
 			<button id="save">Save</button>

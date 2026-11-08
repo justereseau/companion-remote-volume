@@ -192,11 +192,13 @@ jobs:
             exit 1
           fi
 
-  # Release binaries for each OS, packed as one archive each. The publish job attaches them to the release.
+  # Release binaries for each OS: one archive and the plain program (what updates download), plus the
+  # installers. The publish job attaches them to the release.
   build:
     name: Build (${{ matrix.os }})
     needs: [core]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -239,11 +241,56 @@ jobs:
           else
             tar czf "$NAME.tar.gz" "$NAME"
           fi
+          mkdir upload
+          mv "$NAME.${{ matrix.archive }}" upload/
+          cp "core/target/release/remote-volume${{ matrix.exe }}" "upload/$NAME${{ matrix.exe }}"
+          if [ "${{ runner.os }}" = Linux ]; then
+            cp installer/install.sh upload/
+          fi
+
+      - name: Build the Windows setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $version = (Select-String -Path core\Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          & $iscc "/DAppVersion=$version" "/DSourceExe=$PWD\core\target\release\remote-volume.exe" installer\remote-volume.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          Move-Item installer\remote-volume-setup-windows-x64.exe upload\
+
+      # The setup must leave a running, self-updating app behind, and take it away again.
+      - name: Try the Windows setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Not Start-Process -Wait: it also waits for child processes, and the installed app keeps running.
+          $setup = Start-Process upload\remote-volume-setup-windows-x64.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru
+          if (-not $setup.WaitForExit(300000)) { throw "The setup does not finish" }
+          if ($setup.ExitCode -ne 0) { throw "The setup failed with code $($setup.ExitCode)" }
+          $update = $null
+          foreach ($attempt in 1..30) {
+            try { $update = Invoke-RestMethod http://127.0.0.1:2502/api/update; break } catch { Start-Sleep -Seconds 1 }
+          }
+          if ($null -eq $update) { throw "The installed app does not answer" }
+          if ($update.managed -ne $true) { throw "The installed app does not update itself: $update" }
+          $run = Get-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name 'Remote Volume'
+          Write-Output "Starts at login with: $($run.'Remote Volume')"
+          $folder = "$env:LOCALAPPDATA\Programs\RemoteVolume"
+          $uninstaller = Start-Process "$folder\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru
+          if (-not $uninstaller.WaitForExit(120000)) { throw "The uninstaller does not finish" }
+          foreach ($attempt in 1..30) {
+            if (-not (Test-Path "$folder\remote-volume.exe")) { break }
+            Start-Sleep -Seconds 1
+          }
+          if (Test-Path "$folder\remote-volume.exe") { throw "The uninstaller left the program behind" }
+          if (Get-Process -Name remote-volume -ErrorAction SilentlyContinue) { throw "The uninstaller left the app running" }
+          if ((Get-Item HKCU:\Software\Microsoft\Windows\CurrentVersion\Run).GetValue('Remote Volume')) { throw "The uninstaller left the start at login" }
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-${{ matrix.target }}
-          path: remote-volume-${{ matrix.target }}.${{ matrix.archive }}
+          path: upload/*
           if-no-files-found: error
           retention-days: 30
 
@@ -287,6 +334,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ needs.release-please.outputs.tag_name || inputs.release_tag }}
+      # The public key built into the app (`PUBLIC_KEY` in core/src/update.rs).
+      UPDATE_PUBLIC_KEY: 16d0d1aa400484aea2df89ecb456e22c5b5149f5bfa5f1f53830b6f4e758f13d
     steps:
       # Binaries must come from exactly the tagged commit.
       - name: Check that this run built the tagged commit
@@ -306,5 +355,36 @@ jobs:
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
 
+      # What installed apps update from. They only accept a manifest signed with this key.
+      - name: Sign the update manifest
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          mkdir manifest
+          sum() { sha256sum "dist/$1" | cut -d ' ' -f 1; }
+          jq -n --arg version "${TAG#v}" \
+            --arg windows "$(sum remote-volume-windows-x64.exe)" \
+            --arg macos "$(sum remote-volume-macos-arm64)" \
+            --arg linux "$(sum remote-volume-linux-x64)" \
+            '{version: $version, assets: {
+              "windows-x64": {file: "remote-volume-windows-x64.exe", sha256: $windows},
+              "macos-arm64": {file: "remote-volume-macos-arm64", sha256: $macos},
+              "linux-x64": {file: "remote-volume-linux-x64", sha256: $linux}}}' > manifest/update.json
+          cat manifest/update.json
+          umask 077
+          key="$RUNNER_TEMP/update-signing.pem"
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
+          trap 'rm -f "$key"' EXIT
+          public=$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n')
+          if [[ "$public" != "$UPDATE_PUBLIC_KEY" ]]; then
+            echo "::error::UPDATE_SIGNING_KEY does not match the public key built into the app."
+            exit 1
+          fi
+          openssl pkeyutl -sign -rawin -inkey "$key" -in manifest/update.json -out manifest/update.json.sig
+
+      # The manifest goes last: an app that finds it can also find everything it names.
       - name: Upload to the GitHub release
-        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+        run: |
+          gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" manifest/update.json.sig --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" manifest/update.json --clobber --repo "$GITHUB_REPOSITORY"

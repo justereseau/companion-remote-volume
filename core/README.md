@@ -11,6 +11,12 @@ Rust binary that owns the OS audio calls and talks line-delimited JSON over stdi
 | macOS | Xcode command line tools (`xcode-select --install`). |
 | Linux | `sudo apt install libpulse-dev pkg-config`, plus a running PulseAudio or PipeWire server to test against. |
 
+## Installing and updating
+
+`src/install.rs` is `--install` / `--uninstall`: one program file in a per-user folder that starts at login with `--service` (Windows `Run` key, macOS LaunchAgent, Linux systemd user service). `installer/` holds the Windows setup (Inno Setup, which only delivers the program and runs `--install`) and `install.sh`.
+
+`src/update.rs` is the self-update of a program running with `--service` from that folder. Not a program started by hand, and not a debug build (its `-dev` version never updates). CI signs each release's `update.json` with the Ed25519 private key in the repository secret `UPDATE_SIGNING_KEY`; the public key is `PUBLIC_KEY` in `update.rs` and `UPDATE_PUBLIC_KEY` in `ci.yml`. To change the key, ship a release signed with the old key that contains the new public key, then change the secret.
+
 ## Commands
 
 Run from `core/`:
