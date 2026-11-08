@@ -40,7 +40,7 @@ curl -fsSL https://github.com/justereseau/companion-remote-volume/releases/lates
 
 On Linux it needs a systemd user session and PulseAudio's client library (`sudo apt install libpulse0`). To uninstall, run the installed program with `--uninstall`: `~/.local/share/remote-volume/remote-volume` on Linux, `~/Library/Application Support/RemoteVolume/remote-volume` on macOS.
 
-The app has no tray icon. Its settings are at <http://127.0.0.1:2502/>, and it logs to `remote-volume.log` next to its `config.json`.
+On Windows and macOS the installed app has an icon in the notification area or menu bar, with its version, the number of connected clients, **Open settings** and **Quit**. After **Quit** it starts again at the next login. Linux has no icon. The settings are at <http://127.0.0.1:2502/> on every OS, and the app logs to `remote-volume.log` next to its `config.json`.
 
 **Without installing:** the archives in the release hold just the program. Unpack one and run `remote-volume`: it runs in a terminal window until you stop it with Ctrl+C, and does not update itself. macOS: the binary is not signed. If Gatekeeper blocks it, run `xattr -d com.apple.quarantine remote-volume` once. `remote-volume --install` turns any copy into an installed one.
 

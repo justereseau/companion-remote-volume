@@ -6,7 +6,9 @@
 use std::env;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
 use std::time::Duration;
 
 use remote_volume_core::audio::AudioHandle;
@@ -17,7 +19,8 @@ use remote_volume_core::install;
 use remote_volume_core::log::{FileLog, Log, StderrLog};
 use remote_volume_core::server::Server;
 use remote_volume_core::settings::{SettingsApp, SettingsHttp};
-use remote_volume_core::update::{self, UpdateHandle, Updater};
+use remote_volume_core::tray::{self, TrayApp};
+use remote_volume_core::update::{self, no_window, UpdateHandle, Updater};
 use remote_volume_core::VERSION;
 use tokio::sync::Notify;
 
@@ -26,7 +29,7 @@ const BIND_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 fn open_in_browser(url: &str) {
     let result = if cfg!(windows) {
-        Command::new("cmd").args(["/C", "start", "", url]).spawn()
+        no_window(Command::new("cmd").args(["/C", "start", "", url])).spawn()
     } else if cfg!(target_os = "macos") {
         Command::new("open").arg(url).spawn()
     } else {
@@ -67,7 +70,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    report(run(options))
+    if options.service && tray::SUPPORTED {
+        return run_with_tray(options);
+    }
+    finish(run(options, None))
 }
 
 fn report(result: Result<(), String>) -> ExitCode {
@@ -78,6 +84,75 @@ fn report(result: Result<(), String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// How the app ended.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ended {
+    Stopped,
+    /// A new program is in place, and the service manager (or Windows, by now) has to start it.
+    Updated,
+}
+
+fn finish(result: Result<Ended, String>) -> ExitCode {
+    match result {
+        Ok(Ended::Updated) if !cfg!(windows) => ExitCode::from(install::RESTART_EXIT_CODE),
+        Ok(_) => ExitCode::SUCCESS,
+        Err(message) => report(Err(message)),
+    }
+}
+
+/// What the menu needs from the running app.
+struct Running {
+    server: Server,
+    settings_url: String,
+    log: Arc<dyn Log>,
+}
+
+/// Between the app and its menu.
+struct MenuLink {
+    quit: Arc<Notify>,
+    running: mpsc::Sender<Running>,
+}
+
+/// The icon keeps the main thread, and the app runs on another. See [`tray`].
+fn run_with_tray(options: Options) -> ExitCode {
+    let quit = Arc::new(Notify::new());
+    let stop = Arc::new(AtomicBool::new(false));
+    let (running, started) = mpsc::channel();
+    let link = MenuLink {
+        quit: quit.clone(),
+        running,
+    };
+    let finished = stop.clone();
+    let app = thread::Builder::new()
+        .name("app".into())
+        .spawn(move || {
+            let result = run(options, Some(link));
+            finished.store(true, Ordering::SeqCst);
+            result
+        })
+        .expect("failed to start the app thread");
+
+    // Fails when the app ended before it got this far.
+    if let Ok(Running {
+        server,
+        settings_url,
+        log,
+    }) = started.recv()
+    {
+        tray::run(
+            TrayApp {
+                title: format!("Remote Volume {VERSION}"),
+                status: Box::new(move || tray::clients_status(server.client_count())),
+                open_settings: Box::new(move || open_in_browser(&settings_url)),
+                quit: Box::new(move || quit.notify_one()),
+                log,
+            },
+            &stop,
+        );
+    }
+    finish(app.join().unwrap_or_else(|_| Err("the app crashed".into())))
 }
 
 /// The program to keep up to date: this one, when it runs as the installed service of a release.
@@ -106,7 +181,7 @@ fn start_updates(
     }
 }
 
-fn run(options: Options) -> Result<(), String> {
+fn run(options: Options, menu: Option<MenuLink>) -> Result<Ended, String> {
     let log: Arc<dyn Log> = if options.service {
         // No terminal to read: without a file there would be no trace of what happened.
         let path = options.config_dir.join("remote-volume.log");
@@ -196,6 +271,18 @@ fn run(options: Options) -> Result<(), String> {
             }
         };
         log.info(&format!("Settings: {}", settings.url()));
+        let quit = Arc::new(Notify::new());
+        let quit = match menu {
+            Some(link) => {
+                let _ = link.running.send(Running {
+                    server: server.clone(),
+                    settings_url: settings.url(),
+                    log: log.clone(),
+                });
+                link.quit
+            }
+            None => quit,
+        };
         if options.open {
             open_in_browser(&settings.url());
         }
@@ -206,6 +293,7 @@ fn run(options: Options) -> Result<(), String> {
                 false
             }
             () = restart.notified() => true,
+            () = quit.notified() => false,
         };
         log.info("Shutting down.");
         settings.stop();
@@ -214,7 +302,8 @@ fn run(options: Options) -> Result<(), String> {
             if let Some(program) = &program {
                 install::restart_service(program)?;
             }
+            return Ok(Ended::Updated);
         }
-        Ok(())
+        Ok(Ended::Stopped)
     })
 }

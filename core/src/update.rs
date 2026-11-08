@@ -177,7 +177,7 @@ impl Fetch for HttpsFetch {
 }
 
 /// Runs `command` with no window of its own, also when this process has no console.
-pub(crate) fn no_window(command: &mut Command) -> &mut Command {
+pub fn no_window(command: &mut Command) -> &mut Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

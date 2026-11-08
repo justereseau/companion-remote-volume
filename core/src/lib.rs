@@ -14,6 +14,7 @@ pub mod log;
 pub mod protocol;
 pub mod server;
 pub mod settings;
+pub mod tray;
 pub mod update;
 pub mod volume;
 pub mod wsproto;

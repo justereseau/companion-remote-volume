@@ -111,7 +111,10 @@ fn launchd_plist(program: &Path) -> String {
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
-	<true/>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
 </dict>
 </plist>
 "#
@@ -324,7 +327,12 @@ fn start_detached(program: &Path) -> Result<(), String> {
         .map_err(|e| format!("could not start {}: {e}", program.display()))
 }
 
-/// After an update: gets the new program running once this process exits.
+/// The exit code that makes launchd and systemd start the (new) program again. launchd restarts
+/// the app only after a failure exit code: a plain exit is the user choosing Quit.
+pub const RESTART_EXIT_CODE: u8 = 75;
+
+/// After an update: gets the new program running once this process exits. Elsewhere the exit code
+/// does that, see [`RESTART_EXIT_CODE`].
 pub fn restart_service(program: &Path) -> Result<(), String> {
     #[cfg(windows)]
     return start_detached(program);
@@ -406,7 +414,8 @@ mod tests {
         let plist = launchd_plist(Path::new("/Users/a&b/remote-volume"));
         assert!(plist.contains("<string>/Users/a&amp;b/remote-volume</string>"));
         assert!(plist.contains("<string>--service</string>"));
-        assert!(plist.contains("<key>KeepAlive</key>\n\t<true/>"));
+        // Restarted after a crash or an update (a failure exit code), but Quit stays quit.
+        assert!(plist.contains("<key>SuccessfulExit</key>\n\t\t<false/>"));
         assert!(plist.contains("<string>com.justereseau.remote-volume</string>"));
     }
 
