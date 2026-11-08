@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.1](https://github.com/justereseau/companion-remote-volume/compare/v1.7.0...v1.7.1) (2026-11-08)
+
+
+### Bug Fixes
+
+* send the app version in the capabilities ([92f3dc5](https://github.com/justereseau/companion-remote-volume/commit/92f3dc5e616ebbd52242c262f4fc3676d104148d))
+* send the app version in the capabilities ([aa47ff3](https://github.com/justereseau/companion-remote-volume/commit/aa47ff3f393aee7c86859084b4bd7ab63ffe16e4))
+
 ## [1.7.0](https://github.com/justereseau/companion-remote-volume/compare/v1.6.0...v1.7.0) (2026-11-08)
 
 
