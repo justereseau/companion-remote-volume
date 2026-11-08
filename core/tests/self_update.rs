@@ -1,6 +1,7 @@
 //! Replacing the program file of a real, running app: what an update does, on the OS at hand.
 
 use std::fs;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -31,6 +32,16 @@ impl Drop for Installed {
     }
 }
 
+/// A port nothing listens on right now. Port 0 will not do: the config clamps it to port 1, which
+/// needs admin rights on Linux and macOS.
+fn free_port() -> u16 {
+    TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
 /// Runs the copy with a config of its own, on free ports and on the loopback only.
 struct Running(Child);
 
@@ -38,7 +49,10 @@ impl Running {
     fn start(program: &Path, config_dir: &Path) -> Running {
         fs::write(
             config_dir.join("config.json"),
-            r#"{"websocket":{"port":0,"host":"127.0.0.1"}}"#,
+            format!(
+                r#"{{"websocket":{{"port":{},"host":"127.0.0.1"}}}}"#,
+                free_port()
+            ),
         )
         .unwrap();
         let child = Command::new(program)
@@ -116,7 +130,8 @@ fn a_program_that_fails_its_check_leaves_the_running_one_in_place() {
         check_program(new, &this_version())
     })
     .unwrap_err();
-    assert!(error.contains("does not start"), "{error}");
+    // Not starting at all on some OSes, starting without reporting the version on others.
+    assert!(error.contains("the new version"), "{error}");
     assert_eq!(fs::read(&installed.program).unwrap(), original);
     assert!(!installed.dir.join("remote-volume.old").exists());
 }
