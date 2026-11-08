@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.0](https://github.com/justereseau/companion-remote-volume/compare/v1.6.0...v1.7.0) (2026-11-08)
+
+
+### Features
+
+* installers and verified self-update ([b27c147](https://github.com/justereseau/companion-remote-volume/commit/b27c14789cc06d9e3364052035729b4c04ae98fe))
+* installers and verified self-update ([0c44f63](https://github.com/justereseau/companion-remote-volume/commit/0c44f6364dff0d66fd2e5cd342904fd9698b05a4))
+
 ## [1.6.0](https://github.com/justereseau/companion-remote-volume/compare/v1.5.0...v1.6.0) (2026-11-06)
 
 
