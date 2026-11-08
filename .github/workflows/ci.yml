@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Re-attach binaries to an existing release (e.g. v1.2.0). Run from that tag. Leave empty for a normal CI run.'
+        description: 'Finish a draft release that was not published (e.g. v1.2.0). Run from that tag. Leave empty for a normal CI run.'
         required: false
         default: ''
 
@@ -295,9 +295,10 @@ jobs:
           retention-days: 30
 
   # release-please keeps a release PR (version bump + CHANGELOG) up to date from the Conventional
-  # Commits on main. Merging that PR makes this job create the tag and GitHub release; the builds
-  # of the same run are then attached by `publish`. Uses the built-in GITHUB_TOKEN, so the release
-  # PR does not trigger CI by itself: run this workflow manually on its branch before merging.
+  # Commits on main. Merging that PR makes this job create the tag and a draft GitHub release;
+  # `publish` then attaches the builds of the same run and publishes it. Uses the built-in
+  # GITHUB_TOKEN, so the release PR does not trigger CI by itself: run this workflow manually on its
+  # branch before merging.
   release-please:
     name: Release PR / tag
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -318,7 +319,7 @@ jobs:
           manifest-file: .release-please-manifest.json
 
   publish:
-    name: Attach binaries to release
+    name: Attach binaries and publish release
     needs: [release-please, build, core]
     # always(): release-please is skipped on manual runs, which must not skip this job.
     if: >-
@@ -337,12 +338,17 @@ jobs:
       # The public key built into the app (`PUBLIC_KEY` in core/src/update.rs).
       UPDATE_PUBLIC_KEY: 16d0d1aa400484aea2df89ecb456e22c5b5149f5bfa5f1f53830b6f4e758f13d
     steps:
-      # Binaries must come from exactly the tagged commit.
-      - name: Check that this run built the tagged commit
+      # Binaries must come from exactly the tagged commit, and a published release is final.
+      - name: Check that this run built the tagged commit of a draft release
         run: |
           tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
           if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
             echo "::error::$TAG points to $tag_sha but this run built $GITHUB_SHA. Run the workflow from the tag $TAG."
+            exit 1
+          fi
+          is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft --repo "$GITHUB_REPOSITORY")
+          if [[ "$is_draft" != "true" ]]; then
+            echo "::error::$TAG is already published and must not change. Make a new release instead."
             exit 1
           fi
 
@@ -382,9 +388,24 @@ jobs:
           fi
           openssl pkeyutl -sign -rawin -inkey "$key" -in manifest/update.json -out manifest/update.json.sig
 
-      # The manifest goes last: an app that finds it can also find everything it names.
-      - name: Upload to the GitHub release
+      # --clobber only replaces files of this draft, from an earlier attempt that did not finish.
+      - name: Upload to the draft release
+        run: gh release upload "$TAG" dist/* manifest/update.json manifest/update.json.sig --clobber --repo "$GITHUB_REPOSITORY"
+
+      # Installed apps and install.sh read releases/latest, which skips drafts: they get all the
+      # files at once. With the repository setting "Immutable releases", this also locks them.
+      - name: Publish the release
+        run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
+
+      # The release is out either way: this reports that the repository setting was turned off.
+      - name: Check that the published release is immutable
         run: |
-          gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
-          gh release upload "$TAG" manifest/update.json.sig --clobber --repo "$GITHUB_REPOSITORY"
-          gh release upload "$TAG" manifest/update.json --clobber --repo "$GITHUB_REPOSITORY"
+          for attempt in 1 2 3 4 5 6; do
+            immutable=$(gh release view "$TAG" --json isImmutable --jq .isImmutable --repo "$GITHUB_REPOSITORY")
+            if [[ "$immutable" == "true" ]]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::$TAG is published but not immutable. Turn on Immutable releases in the repository settings."
+          exit 1
