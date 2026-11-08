@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.7.2](https://github.com/justereseau/companion-remote-volume/compare/v1.7.1...v1.7.2) (2026-11-08)
+
+
+### Bug Fixes
+
+* **update:** sign releases with the new key ([9e40079](https://github.com/justereseau/companion-remote-volume/commit/9e40079c95ec195661b9bcab5aaa7e85b6c73886))
+* **update:** switch to a new release signing key ([181f56e](https://github.com/justereseau/companion-remote-volume/commit/181f56ea9bce46af1d76b9f3c253e5c747726b39))
+* **update:** switch to a new release signing key ([6d29b50](https://github.com/justereseau/companion-remote-volume/commit/6d29b50c6b2d79d133f61a8097c31c2e2de78f2f))
+
 ## [1.7.1](https://github.com/justereseau/companion-remote-volume/compare/v1.7.0...v1.7.1) (2026-11-08)
 
 
