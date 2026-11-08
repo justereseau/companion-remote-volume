@@ -227,6 +227,7 @@ What this computer supports right now. It depends on the OS and on the moment (f
 {
 	"capabilities": {
 		"protocolVersion": 2,
+		"version": "1.7.1",
 		"outputDevices": { "list": false, "select": false },
 		"apps": { "volume": true, "mute": true },
 		"media": { "keys": true },
@@ -234,6 +235,8 @@ What this computer supports right now. It depends on the OS and on the moment (f
 	}
 }
 ```
+
+`version` is the version of the running app; a build from source adds `-dev`, and older apps do not send it.
 
 An action whose capability is `false` is answered with `Not supported on this OS` and does nothing. `outputDevices` is reserved for device selection, which is not implemented yet. Capabilities are not pushed when they change; ask again with `getCapabilities`.
 

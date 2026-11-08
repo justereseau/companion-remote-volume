@@ -302,7 +302,12 @@ impl Client {
     }
 }
 
-const NO_CAPS: &str = r#"{"protocolVersion":2,"outputDevices":{"list":false,"select":false},"apps":{"volume":false,"mute":false},"media":{"keys":false},"keyboard":{"functionKeys":false}}"#;
+fn no_caps() -> String {
+    format!(
+        r#"{{"protocolVersion":2,"version":"{}","outputDevices":{{"list":false,"select":false}},"apps":{{"volume":false,"mute":false}},"media":{{"keys":false}},"keyboard":{{"functionKeys":false}}}}"#,
+        remote_volume_core::VERSION
+    )
+}
 
 // ---- v1 behaviour -------------------------------------------------------------------------------
 
@@ -314,7 +319,8 @@ async fn pushes_the_current_state_on_connect() {
     assert_eq!(
         first.to_string(),
         format!(
-            r#"{{"volume":40,"muted":false,"outputDevice":"Speakers","capabilities":{NO_CAPS}}}"#
+            r#"{{"volume":40,"muted":false,"outputDevice":"Speakers","capabilities":{}}}"#,
+            no_caps()
         ),
         "key order and shape are part of the contract"
     );
@@ -960,7 +966,7 @@ async fn get_capabilities_replies_with_the_backends_runtime_answer() {
     c.send(json!({"action":"getCapabilities"})).await;
     assert_eq!(
         c.next().await.to_string(),
-        format!(r#"{{"capabilities":{NO_CAPS}}}"#)
+        format!(r#"{{"capabilities":{}}}"#, no_caps())
     );
 
     env.set(|s| {
@@ -976,7 +982,7 @@ async fn get_capabilities_replies_with_the_backends_runtime_answer() {
     c.send(json!({"action":"getCapabilities"})).await;
     assert_eq!(
         c.next().await,
-        json!({"capabilities":{"protocolVersion":2,"outputDevices":{"list":true,"select":true},"apps":{"volume":true,"mute":true},"media":{"keys":true},"keyboard":{"functionKeys":true}}})
+        json!({"capabilities":{"protocolVersion":2,"version":remote_volume_core::VERSION,"outputDevices":{"list":true,"select":true},"apps":{"volume":true,"mute":true},"media":{"keys":true},"keyboard":{"functionKeys":true}}})
     );
     assert!(
         env.calls().is_empty(),
