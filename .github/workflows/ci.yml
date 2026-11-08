@@ -198,6 +198,7 @@ jobs:
     name: Build (${{ matrix.os }})
     needs: [core]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -263,7 +264,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Start-Process upload\remote-volume-setup-windows-x64.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          # Not Start-Process -Wait: it also waits for child processes, and the installed app keeps running.
+          $setup = Start-Process upload\remote-volume-setup-windows-x64.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru
+          if (-not $setup.WaitForExit(300000)) { throw "The setup does not finish" }
+          if ($setup.ExitCode -ne 0) { throw "The setup failed with code $($setup.ExitCode)" }
           $update = $null
           foreach ($attempt in 1..30) {
             try { $update = Invoke-RestMethod http://127.0.0.1:2502/api/update; break } catch { Start-Sleep -Seconds 1 }
@@ -273,7 +277,8 @@ jobs:
           $run = Get-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name 'Remote Volume'
           Write-Output "Starts at login with: $($run.'Remote Volume')"
           $folder = "$env:LOCALAPPDATA\Programs\RemoteVolume"
-          Start-Process "$folder\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          $uninstaller = Start-Process "$folder\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru
+          if (-not $uninstaller.WaitForExit(120000)) { throw "The uninstaller does not finish" }
           foreach ($attempt in 1..30) {
             if (-not (Test-Path "$folder\remote-volume.exe")) { break }
             Start-Sleep -Seconds 1
