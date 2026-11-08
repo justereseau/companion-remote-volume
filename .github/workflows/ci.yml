@@ -327,6 +327,8 @@ jobs:
       (needs.release-please.outputs.release_created == 'true' ||
        (github.event_name == 'workflow_dispatch' && inputs.release_tag != ''))
     runs-on: ubuntu-latest
+    # Holds UPDATE_SIGNING_KEY, and only lets main and v* tags in: no other ref can sign an update.
+    environment: release
     concurrency:
       group: publish-release
       cancel-in-progress: false
