@@ -338,7 +338,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ needs.release-please.outputs.tag_name || inputs.release_tag }}
       # The public key built into the app (`PUBLIC_KEY` in core/src/update.rs).
-      UPDATE_PUBLIC_KEY: 16d0d1aa400484aea2df89ecb456e22c5b5149f5bfa5f1f53830b6f4e758f13d
+      UPDATE_PUBLIC_KEY: c2201f6d966373dd6dce32e1b66649b65dff034330897b9eca6975828e1934bb
     steps:
       # Binaries must come from exactly the tagged commit, and a published release is final.
       - name: Check that this run built the tagged commit of a draft release

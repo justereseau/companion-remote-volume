@@ -2,9 +2,9 @@
 //! `UPDATE_SIGNING_KEY`) must verify against the public key built into the app. The fixture's
 //! version is 0.0.1, so it can never pass as an update.
 //!
-//! The key was changed once: the release that carries the new public key was still signed with the
-//! old key, so apps installed before it accept it. `update-old.json.sig` is signed with the old
-//! key, `update-old.json.new.sig` with the current one.
+//! The key was changed once, and the old private key was lost: apps built with the old public key
+//! cannot verify releases signed with the current one and need a manual reinstall.
+//! `update-old.json.sig` is signed with the old key, `update-old.json.new.sig` with the current one.
 
 use remote_volume_core::update::{read_manifest, Version, PUBLIC_KEY};
 
