@@ -2,8 +2,8 @@
 //! limiting, capabilities. Port of `lib/protocol.js`; free of I/O so it is unit-tested directly.
 //!
 //! Protocol v1 (setVolume, increaseVolume, decreaseVolume, getState, isMuted, mute, unmute,
-//! toggleMute) is unchanged. v2 adds `getCapabilities`, the per-app actions, string targets
-//! (`app`, `device`), capability gating and the "not found" errors; see the README.
+//! toggleMute) is unchanged. v2 adds `getCapabilities`, the per-app and device actions, string
+//! targets (`app`, `device`), capability gating and the "not found" errors; see the README.
 
 use std::time::Instant;
 
@@ -73,6 +73,8 @@ pub struct ActionSpec {
     pub value: Option<ValueSpec>,
     /// The string target this action needs; unknown keys in a message are ignored.
     pub target: Option<TargetKind>,
+    /// The action takes an optional `devices` list of targets.
+    pub device_list: bool,
     /// Dotted capability, e.g. `"apps.volume"`: the action answers "Not supported" while it is false.
     pub requires: Option<&'static str>,
     /// The command's result is sent to the caller.
@@ -87,6 +89,7 @@ impl ActionSpec {
             name,
             value: None,
             target: None,
+            device_list: false,
             requires: None,
             reply: false,
             mutates: false,
@@ -215,6 +218,25 @@ pub const KEYBOARD_ACTIONS: [ActionSpec; 1] = [ActionSpec {
     ..ActionSpec::new("pressFunctionKey")
 }];
 
+/// Output device selection (protocol v2). The changing actions send no reply: the new state is
+/// pushed to every client.
+pub const DEVICE_ACTIONS: [ActionSpec; 3] = [
+    ActionSpec {
+        requires: Some("outputDevices.list"),
+        ..replying("getOutputDevices")
+    },
+    ActionSpec {
+        target: Some(TargetKind::Device),
+        requires: Some("outputDevices.select"),
+        ..mutating("setOutputDevice")
+    },
+    ActionSpec {
+        device_list: true,
+        requires: Some("outputDevices.select"),
+        ..mutating("cycleOutputDevice")
+    },
+];
+
 /// One validated client message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Message {
@@ -222,6 +244,8 @@ pub struct Message {
     pub value: Option<i64>,
     pub app: Option<String>,
     pub device: Option<String>,
+    /// The optional `devices` list; empty when absent.
+    pub devices: Vec<String>,
 }
 
 /// A message that was refused; `action` is set when the action name was readable.
@@ -268,6 +292,19 @@ fn target_error(action: &str, key: &str) -> String {
     )
 }
 
+/// A JSON list of valid targets.
+fn parse_targets(list: &Value) -> Option<Vec<String>> {
+    list.as_array()?
+        .iter()
+        .map(|entry| {
+            entry
+                .as_str()
+                .filter(|t| is_valid_target(t))
+                .map(String::from)
+        })
+        .collect()
+}
+
 /// Parse and validate one client message against an action table.
 pub fn parse_message(raw: &[u8], actions: &[ActionSpec]) -> Result<Message, Rejection> {
     let text = String::from_utf8_lossy(raw);
@@ -285,6 +322,7 @@ pub fn parse_message(raw: &[u8], actions: &[ActionSpec]) -> Result<Message, Reje
         value: None,
         app: None,
         device: None,
+        devices: Vec::new(),
     };
     if let Some(range) = spec.value {
         match msg.get("value").and_then(as_integer) {
@@ -303,6 +341,20 @@ pub fn parse_message(raw: &[u8], actions: &[ActionSpec]) -> Result<Message, Reje
             }
             _ => return Err(reject(Some(spec.name), target_error(spec.name, kind.key()))),
         }
+    }
+    if spec.device_list {
+        message.devices = match msg.get("devices") {
+            None => Vec::new(),
+            Some(list) => parse_targets(list).ok_or_else(|| {
+                reject(
+                    Some(spec.name),
+                    format!(
+                        "Invalid devices for {}. Must be a list of strings of 1-{MAX_TARGET_LENGTH} characters without control characters.",
+                        spec.name
+                    ),
+                )
+            })?,
+        };
     }
     Ok(message)
 }
@@ -500,6 +552,7 @@ mod tests {
             value,
             app: None,
             device: None,
+            devices: Vec::new(),
         })
     }
 
@@ -637,8 +690,7 @@ mod tests {
         assert!(!has_capability(&Features::default(), "apps"));
     }
 
-    // Device actions arrive with #12, so the target rules are exercised with a table that declares
-    // both kinds.
+    // The target rules, exercised with a table that declares both kinds.
     fn targeted() -> Vec<ActionSpec> {
         let mut t = BUILTIN_ACTIONS.to_vec();
         t.push(ActionSpec {
@@ -778,6 +830,64 @@ mod tests {
             json!({"action":"increaseAppVolume","app":"€".repeat(MAX_TARGET_LENGTH),"value":99})
                 .to_string();
         assert!(worst.len() < MAX_PAYLOAD_BYTES, "{} bytes", worst.len());
+    }
+
+    #[test]
+    fn device_actions_need_their_capability_and_their_target() {
+        let parse = |v: Value| parse_message(v.to_string().as_bytes(), &DEVICE_ACTIONS);
+        let m = parse(json!({"action":"setOutputDevice","device":"Headset"})).unwrap();
+        assert_eq!(m.device.as_deref(), Some("Headset"));
+        assert!(parse(json!({"action":"setOutputDevice"})).is_err());
+        assert!(parse(json!({"action":"getOutputDevices"})).is_ok());
+        for spec in DEVICE_ACTIONS {
+            let list = spec.name == "getOutputDevices";
+            assert_eq!(spec.reply, list, "{}", spec.name);
+            assert_eq!(spec.mutates, !list, "{}", spec.name);
+            let needs = if list {
+                "outputDevices.list"
+            } else {
+                "outputDevices.select"
+            };
+            assert_eq!(spec.requires, Some(needs), "{}", spec.name);
+        }
+    }
+
+    #[test]
+    fn the_cycle_list_is_optional_and_checked() {
+        let parse = |v: Value| parse_message(v.to_string().as_bytes(), &DEVICE_ACTIONS);
+        assert!(parse(json!({"action":"cycleOutputDevice"}))
+            .unwrap()
+            .devices
+            .is_empty());
+        assert!(parse(json!({"action":"cycleOutputDevice","devices":[]}))
+            .unwrap()
+            .devices
+            .is_empty());
+        assert_eq!(
+            parse(json!({"action":"cycleOutputDevice","devices":["a","Headset"]}))
+                .unwrap()
+                .devices,
+            ["a", "Headset"]
+        );
+        for bad in [
+            json!("a"),
+            json!(null),
+            json!({"a":1}),
+            json!([1]),
+            json!([""]),
+            json!(["a\u{0}b"]),
+            json!(["x".repeat(257)]),
+        ] {
+            let rejection = parse(json!({"action":"cycleOutputDevice","devices":bad})).unwrap_err();
+            assert_eq!(rejection.action.as_deref(), Some("cycleOutputDevice"));
+            assert!(
+                rejection
+                    .error
+                    .starts_with("Invalid devices for cycleOutputDevice."),
+                "{bad}: {}",
+                rejection.error
+            );
+        }
     }
 
     #[test]

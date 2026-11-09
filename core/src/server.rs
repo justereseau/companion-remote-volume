@@ -29,11 +29,12 @@ use crate::apps;
 use crate::audio::AudioHandle;
 use crate::backend::{AudioError, ErrorCode, Features, MediaKey};
 use crate::config::Config;
+use crate::devices;
 use crate::log::Log;
 use crate::wsproto::{
     admit_client, capabilities_json, error_reply, errors, has_capability, parse_message,
     same_value, ActionSpec, Handshake, Message, RateLimiter, Refusal, TargetKind, APP_ACTIONS,
-    BUILTIN_ACTIONS, KEYBOARD_ACTIONS, MAX_PAYLOAD_BYTES, MEDIA_ACTIONS,
+    BUILTIN_ACTIONS, DEVICE_ACTIONS, KEYBOARD_ACTIONS, MAX_PAYLOAD_BYTES, MEDIA_ACTIONS,
 };
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -50,14 +51,14 @@ pub enum CommandError {
 pub type Command = Arc<dyn Fn(Message) -> BoxFuture<Result<Value, CommandError>> + Send + Sync>;
 pub type StateProvider = Arc<dyn Fn() -> BoxFuture<Result<Value, String>> + Send + Sync>;
 
-/// Extension points for more protocol v2 features (device selection): extra actions with their
-/// handlers, and extra state fields. Empty by default, which is protocol v1, `getCapabilities` and
-/// the per-app actions.
+/// Extension points for more protocol v2 features: extra actions with their handlers, and extra
+/// state fields. Empty by default, which is protocol v1, `getCapabilities`, the per-app and the
+/// device actions.
 #[derive(Default, Clone)]
 pub struct Extensions {
     pub actions: Vec<ActionSpec>,
     pub commands: HashMap<&'static str, Command>,
-    /// Extra fields of the state (e.g. list-valued `outputDevices`, `apps`): read on every refresh,
+    /// Extra fields of the state, which may be lists: read on every refresh,
     /// in `getState` and in the initial state, and broadcast when their content changes.
     pub state: Vec<(&'static str, StateProvider)>,
     /// Per-connection message limit as (burst, refill per second); default 20 and 20.
@@ -148,10 +149,18 @@ impl Server {
     ) -> Server {
         let mut actions = BUILTIN_ACTIONS.to_vec();
         actions.extend(APP_ACTIONS);
+        actions.extend(DEVICE_ACTIONS);
         actions.extend(MEDIA_ACTIONS);
         actions.extend(KEYBOARD_ACTIONS);
         actions.extend(ext.actions.iter().copied());
-        let mut state_keys = vec!["volume", "muted", "outputDevice", "apps"];
+        let mut state_keys = vec![
+            "volume",
+            "muted",
+            "outputDevice",
+            "outputDeviceId",
+            "outputDevices",
+            "apps",
+        ];
         state_keys.extend(ext.state.iter().map(|(key, _)| *key));
         let (events, _) = broadcast::channel(256);
         Server {
@@ -371,6 +380,12 @@ impl Inner {
         state.insert("volume".into(), json!(audio.volume));
         state.insert("muted".into(), json!(audio.muted));
         state.insert("outputDevice".into(), json!(audio.output_device));
+        // Left out where listing is unsupported or fails, like `apps` below.
+        if let Some(list) = &audio.output_devices {
+            let default = list.iter().find(|d| d.default).map(|d| &d.id);
+            state.insert("outputDeviceId".into(), json!(default));
+            state.insert("outputDevices".into(), devices::to_json(list));
+        }
         // `apps` is left out where per-app audio is unsupported or turned off, and when listing
         // fails: volume and mute must still get through. Clients that saw a list then get
         // `"apps": null`.
@@ -478,6 +493,9 @@ impl Inner {
         let value = msg.value.map(|v| v as u8).unwrap_or(0);
         if APP_ACTIONS.iter().any(|a| a.name == msg.action) {
             return self.execute_app(msg, value).await;
+        }
+        if DEVICE_ACTIONS.iter().any(|a| a.name == msg.action) {
+            return self.execute_device(msg).await;
         }
         let media = match msg.action {
             "mediaPlayPause" => Some(MediaKey::PlayPause),
@@ -592,6 +610,53 @@ impl Inner {
         match result {
             Ok(()) => Ok(Outcome::Done(Value::Null)),
             Err(error) => self.app_failure(msg.action, error),
+        }
+    }
+
+    /// The device actions. Like for apps, the backend job resolves the target and acts.
+    async fn execute_device(&self, msg: &Message) -> Result<Outcome, String> {
+        let audio = &self.audio;
+        let result = match msg.action {
+            "getOutputDevices" => {
+                return match audio.list_output_devices().await {
+                    Ok(list) => Ok(Outcome::Done(
+                        json!({ "outputDevices": devices::to_json(&list) }),
+                    )),
+                    Err(error) => self.device_failure(msg.action, error),
+                }
+            }
+            "setOutputDevice" => {
+                audio
+                    .set_output_device(msg.device.clone().unwrap_or_default())
+                    .await
+            }
+            "cycleOutputDevice" => audio.cycle_output_device(msg.devices.clone()).await,
+            other => return Err(format!("no handler for {other}")),
+        };
+        match result {
+            Ok(ambiguous) => {
+                for name in ambiguous {
+                    self.log.warn(&format!(
+                        "{}: several devices are named {name:?}; using the first one",
+                        msg.action
+                    ));
+                }
+                Ok(Outcome::Done(Value::Null))
+            }
+            Err(error) => self.device_failure(msg.action, error),
+        }
+    }
+
+    fn device_failure(&self, action: &str, error: AudioError) -> Result<Outcome, String> {
+        match error.code {
+            // `NoDevice`: the OS lost the device between the lookup and the switch.
+            ErrorCode::NotFound | ErrorCode::NoDevice => {
+                self.log
+                    .warn(&format!("{action}: {}", errors::DEVICE_NOT_FOUND));
+                Ok(Outcome::Refused(errors::DEVICE_NOT_FOUND))
+            }
+            ErrorCode::Unsupported => Ok(Outcome::Refused(errors::NOT_SUPPORTED)),
+            _ => Err(error.to_string()),
         }
     }
 

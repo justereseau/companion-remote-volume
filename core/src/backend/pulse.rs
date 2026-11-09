@@ -145,6 +145,40 @@ impl Conn {
         Ok(name)
     }
 
+    /// Whether the server is PipeWire's, which moves the streams to a new default sink by itself
+    /// and would pin them to the sink if we moved them. It calls itself
+    /// `PulseAudio (on PipeWire x.y.z)`.
+    fn is_pipewire(&mut self) -> AudioResult<bool> {
+        let out = Rc::new(Cell::new(false));
+        let pipewire = out.clone();
+        let op = self.context.introspect().get_server_info(move |info| {
+            pipewire.set(
+                info.server_name
+                    .as_ref()
+                    .is_some_and(|name| name.contains("PipeWire")),
+            );
+        });
+        self.wait(op)?;
+        Ok(out.get())
+    }
+
+    /// The index of every playback stream, whatever it is.
+    fn stream_indexes(&mut self) -> AudioResult<Vec<u32>> {
+        let out = Rc::new(RefCell::new(Vec::new()));
+        let indexes = out.clone();
+        let op = self
+            .context
+            .introspect()
+            .get_sink_input_info_list(move |result| {
+                if let ListResult::Item(info) = result {
+                    indexes.borrow_mut().push(info.index);
+                }
+            });
+        self.wait(op)?;
+        let list = std::mem::take(&mut *out.borrow_mut());
+        Ok(list)
+    }
+
     fn sinks(&mut self) -> AudioResult<Vec<Sink>> {
         let out = Rc::new(RefCell::new(Vec::<Sink>::new()));
         let failed = Rc::new(Cell::new(false));
@@ -419,15 +453,39 @@ impl Backend for Pulse {
         Ok(conn.default_sink()?.mute)
     }
 
+    fn set_default_output_device(&mut self, id: &str) -> AudioResult<()> {
+        let mut conn = self.connect()?;
+        let accepted = Rc::new(Cell::new(false));
+        let flag = accepted.clone();
+        let op = conn
+            .context
+            .set_default_sink(id, move |success| flag.set(success));
+        conn.confirm(accepted, op)?;
+        if conn.is_pipewire()? {
+            return Ok(());
+        }
+        // PulseAudio leaves running streams where they are; desktop sound settings move them, and
+        // so do we. A stream may end meanwhile, which is not a failure of the switch.
+        for index in conn.stream_indexes()? {
+            let op = conn
+                .context
+                .introspect()
+                .move_sink_input_by_name(index, id, None);
+            conn.wait(op)?;
+        }
+        Ok(())
+    }
+
     fn features(&mut self) -> Features {
         // Streams exist on any Pulse server, even with no sink (the list is then empty).
         let available = self.connect().is_ok();
         Features {
+            devices_list: available,
+            devices_select: available,
             apps_volume: available,
             apps_mute: available,
             media_keys: self.media_keys,
             function_keys: self.function_keys,
-            ..Features::default()
         }
     }
 
@@ -509,6 +567,43 @@ mod tests {
         );
         assert_eq!(app(Some(""), None), None);
         assert_eq!(app(None, None), None);
+    }
+
+    /// Switches between the null sinks of CI (at least two), then goes back.
+    #[test]
+    fn the_default_sink_can_be_switched_and_volume_follows() {
+        if std::env::var("RV_INTEGRATION")
+            .unwrap_or_default()
+            .is_empty()
+        {
+            eprintln!("skipped: set RV_INTEGRATION to switch the default sink");
+            return;
+        }
+        let mut backend = Pulse::new();
+        let features = backend.features();
+        assert!(features.devices_list && features.devices_select);
+        let devices = backend.list_output_devices().expect("listing sinks");
+        assert!(devices.len() >= 2, "needs two sinks: {devices:?}");
+        let original = devices.iter().find(|d| d.default).expect("a default sink");
+        let other = devices.iter().find(|d| !d.default).unwrap();
+
+        let original_volume = backend.get_volume().unwrap();
+        backend
+            .set_default_output_device(&other.id)
+            .expect("switch");
+        let now = backend.list_output_devices().unwrap();
+        assert!(now.iter().any(|d| d.default && d.id == other.id), "{now:?}");
+        backend.set_volume(17).unwrap();
+        assert_eq!(backend.get_volume().unwrap(), 17);
+
+        backend
+            .set_default_output_device(&original.id)
+            .expect("switch back");
+        assert_eq!(
+            backend.get_volume().unwrap(),
+            original_volume,
+            "the volume is the one of the new default sink"
+        );
     }
 
     /// Plays silence with `pacat` on the default sink (CI: a null sink) and drives its stream.

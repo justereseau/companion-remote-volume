@@ -11,12 +11,15 @@
 use std::ffi::{c_char, c_void};
 use std::mem::size_of;
 use std::ptr;
+use std::sync::Mutex;
 
-use super::{AudioError, AudioResult, Backend, Capabilities, Device, ErrorCode};
+use super::{AudioError, AudioResult, Backend, Capabilities, Device, ErrorCode, Features};
 use crate::volume::{percent_to_scalar, scalar_to_percent};
 
 type OSStatus = i32;
 type AudioObjectId = u32;
+type PropertyListener =
+    unsafe extern "C" fn(AudioObjectId, u32, *const PropertyAddress, *mut c_void) -> OSStatus;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -57,6 +60,12 @@ extern "C" {
         address: *const PropertyAddress,
         settable: *mut u8,
     ) -> OSStatus;
+    fn AudioObjectAddPropertyListener(
+        object: AudioObjectId,
+        address: *const PropertyAddress,
+        listener: PropertyListener,
+        client_data: *mut c_void,
+    ) -> OSStatus;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -83,6 +92,8 @@ const UTF8: u32 = 0x0800_0100;
 
 const HW_DEFAULT_OUTPUT_DEVICE: u32 = fourcc(b"dOut");
 const HW_DEVICES: u32 = fourcc(b"dev#");
+/// `kAudioHardwarePropertyRunLoop`: the run loop that delivers property notifications.
+const HW_RUN_LOOP: u32 = fourcc(b"rnlp");
 const DEVICE_STREAMS: u32 = fourcc(b"stm#");
 const DEVICE_UID: u32 = fourcc(b"uid ");
 const OBJECT_NAME: u32 = fourcc(b"lnam");
@@ -213,6 +224,64 @@ fn has_output_streams(device: AudioObjectId) -> bool {
     property_size(device, out_addr(DEVICE_STREAMS, ELEMENT_MAIN)).is_ok_and(|size| size > 0)
 }
 
+/// Every device that can play audio, with its UID (which, unlike the object id, survives reboots).
+fn output_devices() -> AudioResult<Vec<(AudioObjectId, String)>> {
+    let size = property_size(SYSTEM_OBJECT, global_addr(HW_DEVICES))
+        .map_err(|s| status_err("listing audio devices", s))?;
+    let mut ids = vec![UNKNOWN_OBJECT; size as usize / size_of::<AudioObjectId>()];
+    let mut bytes = size;
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            SYSTEM_OBJECT,
+            &global_addr(HW_DEVICES),
+            0,
+            ptr::null(),
+            &mut bytes,
+            ids.as_mut_ptr() as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(status_err("listing audio devices", status));
+    }
+    ids.truncate(bytes as usize / size_of::<AudioObjectId>());
+    Ok(ids
+        .into_iter()
+        .filter(|&id| has_output_streams(id))
+        .filter_map(|id| Some((id, string_property(id, DEVICE_UID)?)))
+        .collect())
+}
+
+unsafe extern "C" fn property_changed(
+    _object: AudioObjectId,
+    _count: u32,
+    _addresses: *const PropertyAddress,
+    client_data: *mut c_void,
+) -> OSStatus {
+    let changed = &*(client_data as *const Mutex<Box<dyn Fn() + Send>>);
+    if let Ok(changed) = changed.lock() {
+        changed();
+    }
+    0
+}
+
+/// See [`super::watch`]: the default output device and the device list.
+pub fn watch(changed: Box<dyn Fn() + Send>) -> bool {
+    // Without this the HAL delivers notifications on the main thread's run loop, which only runs
+    // when the tray icon does. NULL asks for a thread of its own.
+    let _ = set::<*const c_void>(SYSTEM_OBJECT, global_addr(HW_RUN_LOOP), ptr::null());
+    // Listeners stay until the process exits, so their data does too.
+    let data = Box::into_raw(Box::new(Mutex::new(changed))) as *mut c_void;
+    [HW_DEFAULT_OUTPUT_DEVICE, HW_DEVICES]
+        .into_iter()
+        .all(|selector| {
+            let address = global_addr(selector);
+            let status = unsafe {
+                AudioObjectAddPropertyListener(SYSTEM_OBJECT, &address, property_changed, data)
+            };
+            status == 0
+        })
+}
+
 /// The properties that carry `selector` on this device: the main element if it has one, otherwise
 /// the individual channels 1 and 2 that the device lets us set.
 fn controls(device: AudioObjectId, selector: u32) -> Vec<PropertyAddress> {
@@ -289,38 +358,32 @@ impl Backend for CoreAudio {
     }
 
     fn list_output_devices(&mut self) -> AudioResult<Vec<Device>> {
-        let size = property_size(SYSTEM_OBJECT, global_addr(HW_DEVICES))
-            .map_err(|s| status_err("listing audio devices", s))?;
-        let mut ids = vec![UNKNOWN_OBJECT; size as usize / size_of::<AudioObjectId>()];
-        let mut bytes = size;
-        let status = unsafe {
-            AudioObjectGetPropertyData(
-                SYSTEM_OBJECT,
-                &global_addr(HW_DEVICES),
-                0,
-                ptr::null(),
-                &mut bytes,
-                ids.as_mut_ptr() as *mut c_void,
-            )
-        };
-        if status != 0 {
-            return Err(status_err("listing audio devices", status));
-        }
-        ids.truncate(bytes as usize / size_of::<AudioObjectId>());
         let default = default_output().ok();
-        Ok(ids
+        Ok(output_devices()?
             .into_iter()
-            .filter(|&id| has_output_streams(id))
-            .filter_map(|id| {
-                let uid = string_property(id, DEVICE_UID)?;
-                let name = string_property(id, OBJECT_NAME).unwrap_or_else(|| uid.clone());
-                Some(Device {
-                    id: uid,
-                    name,
-                    default: Some(id) == default,
-                })
+            .map(|(id, uid)| Device {
+                name: string_property(id, OBJECT_NAME).unwrap_or_else(|| uid.clone()),
+                id: uid,
+                default: Some(id) == default,
             })
             .collect())
+    }
+
+    fn set_default_output_device(&mut self, id: &str) -> AudioResult<()> {
+        let (device, _) = output_devices()?
+            .into_iter()
+            .find(|(_, uid)| uid == id)
+            .ok_or_else(|| AudioError::new(ErrorCode::NotFound, format!("no device {id}")))?;
+        set::<AudioObjectId>(SYSTEM_OBJECT, global_addr(HW_DEFAULT_OUTPUT_DEVICE), device)
+            .map_err(|s| status_err("setting the default output device", s))
+    }
+
+    fn features(&mut self) -> Features {
+        Features {
+            devices_list: true,
+            devices_select: true,
+            ..Features::default()
+        }
     }
 
     fn get_volume(&mut self) -> AudioResult<u8> {

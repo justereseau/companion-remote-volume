@@ -5,14 +5,21 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::sync::{mpsc, Mutex};
+use std::thread;
 
-use windows::core::{Error as WinError, Interface, GUID, HRESULT, PCWSTR, PWSTR};
+use windows::core::{
+    implement, interface, Error as WinError, IUnknown, IUnknown_Vtbl, Interface, GUID, HRESULT,
+    HSTRING, PCWSTR, PWSTR,
+};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
-    eConsole, eRender, AudioSessionStateExpired, IAudioSessionControl2, IAudioSessionManager2,
-    IMMDevice, IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+    eConsole, eMultimedia, eRender, AudioSessionStateExpired, EDataFlow, ERole,
+    IAudioSessionControl2, IAudioSessionManager2, IMMDevice, IMMDeviceEnumerator,
+    IMMNotificationClient, IMMNotificationClient_Impl, ISimpleAudioVolume, MMDeviceEnumerator,
+    DEVICE_STATE, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
@@ -50,6 +57,26 @@ const E_NOTFOUND: u32 = 0x8007_0490; // no default endpoint: hosted CI runners, 
 const AUDCLNT_E_DEVICE_INVALIDATED: u32 = 0x8889_0004;
 const AUDCLNT_E_SERVICE_NOT_RUNNING: u32 = 0x8889_0010;
 const RPC_S_SERVER_UNAVAILABLE: u32 = 0x8007_06BA;
+
+/// `PolicyConfigClient`: what the Sound panel's "Set as Default" uses.
+const POLICY_CONFIG_CLIENT: GUID = GUID::from_u128(0x870a_f99c_171d_4f9e_af0d_e63d_f40c_2bc9);
+
+// Undocumented, but stable since Vista; EarTrumpet and SoundSwitch use it. Only the position of a
+// method in the table matters, so the ones we never call take no parameters here.
+#[interface("f8679f50-850a-41cf-9c72-430f290290c8")]
+unsafe trait IPolicyConfig: IUnknown {
+    fn get_mix_format(&self) -> HRESULT;
+    fn get_device_format(&self) -> HRESULT;
+    fn reset_device_format(&self) -> HRESULT;
+    fn set_device_format(&self) -> HRESULT;
+    fn get_processing_period(&self) -> HRESULT;
+    fn set_processing_period(&self) -> HRESULT;
+    fn get_share_mode(&self) -> HRESULT;
+    fn set_share_mode(&self) -> HRESULT;
+    fn get_property_value(&self) -> HRESULT;
+    fn set_property_value(&self) -> HRESULT;
+    fn set_default_endpoint(&self, device: PCWSTR, role: ERole) -> HRESULT;
+}
 
 fn map_err(e: WinError) -> AudioError {
     let hr = e.code().0 as u32;
@@ -368,6 +395,85 @@ unsafe fn device_name(device: &IMMDevice) -> AudioResult<String> {
     })
 }
 
+/// Reports what changes the list of output devices or the default one. Windows calls it from a
+/// thread of its own and it must not call back into the audio API, so it only signals.
+#[implement(IMMNotificationClient)]
+struct DeviceEvents(Mutex<Box<dyn Fn() + Send>>);
+
+impl DeviceEvents {
+    fn signal(&self) {
+        if let Ok(changed) = self.0.lock() {
+            changed();
+        }
+    }
+}
+
+impl IMMNotificationClient_Impl for DeviceEvents_Impl {
+    fn OnDeviceStateChanged(
+        &self,
+        _id: &PCWSTR,
+        _state: DEVICE_STATE,
+    ) -> windows::core::Result<()> {
+        self.signal();
+        Ok(())
+    }
+
+    fn OnDeviceAdded(&self, _id: &PCWSTR) -> windows::core::Result<()> {
+        self.signal();
+        Ok(())
+    }
+
+    fn OnDeviceRemoved(&self, _id: &PCWSTR) -> windows::core::Result<()> {
+        self.signal();
+        Ok(())
+    }
+
+    fn OnDefaultDeviceChanged(
+        &self,
+        flow: EDataFlow,
+        role: ERole,
+        _id: &PCWSTR,
+    ) -> windows::core::Result<()> {
+        // Fires once per role and per direction; the rest is about what we don't report.
+        if flow == eRender && role == eConsole {
+            self.signal();
+        }
+        Ok(())
+    }
+
+    fn OnPropertyValueChanged(
+        &self,
+        _id: &PCWSTR,
+        _key: &windows::Win32::Foundation::PROPERTYKEY,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+/// See [`super::watch`]: the default output device and the device list. The thread only keeps the
+/// registration alive, in a COM apartment of its own.
+pub fn watch(changed: Box<dyn Fn() + Send>) -> bool {
+    let (started, result) = mpsc::channel();
+    let thread = thread::Builder::new()
+        .name("audio-events".into())
+        .spawn(move || {
+            let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            let client: IMMNotificationClient = DeviceEvents(Mutex::new(changed)).into();
+            let registered = enumerator().and_then(|enumerator| {
+                unsafe { enumerator.RegisterEndpointNotificationCallback(&client) }
+                    .map_err(map_err)?;
+                Ok(enumerator)
+            });
+            let _ = started.send(registered.is_ok());
+            if registered.is_ok() {
+                loop {
+                    thread::park();
+                }
+            }
+        });
+    thread.is_ok() && result.recv().unwrap_or(false)
+}
+
 impl Backend for Wasapi {
     fn capabilities(&mut self) -> Capabilities {
         match enumerator() {
@@ -403,6 +509,21 @@ impl Backend for Wasapi {
         Ok(devices)
     }
 
+    fn set_default_output_device(&mut self, id: &str) -> AudioResult<()> {
+        let policy: IPolicyConfig =
+            unsafe { CoCreateInstance(&POLICY_CONFIG_CLIENT, None, CLSCTX_ALL) }
+                .map_err(map_err)?;
+        let id = HSTRING::from(id);
+        // The roles the Sound panel sets. Master volume and mute follow, as they use the console
+        // role's default on every call.
+        for role in [eConsole, eMultimedia] {
+            unsafe { policy.set_default_endpoint(PCWSTR(id.as_ptr()), role) }
+                .ok()
+                .map_err(map_err)?;
+        }
+        Ok(())
+    }
+
     fn get_volume(&mut self) -> AudioResult<u8> {
         let scalar =
             unsafe { default_endpoint()?.GetMasterVolumeLevelScalar() }.map_err(map_err)?;
@@ -436,12 +557,13 @@ impl Backend for Wasapi {
         // output device (the list is then empty).
         let available = enumerator().is_ok();
         Features {
+            devices_list: available,
+            devices_select: available,
             apps_volume: available,
             apps_mute: available,
             // Key presses go to the user's session, whatever the audio service does.
             media_keys: true,
             function_keys: true,
-            ..Features::default()
         }
     }
 
@@ -530,6 +652,41 @@ mod tests {
             unsafe { indirect_string(r"@C:\does\not\exist.dll,-1") },
             None
         );
+    }
+
+    /// Changes the default output device of the machine for a moment, so it needs an opt-in of its
+    /// own, and two devices.
+    #[test]
+    fn the_default_device_can_be_switched_and_back() {
+        if std::env::var("RV_SWITCH_DEVICE")
+            .unwrap_or_default()
+            .is_empty()
+        {
+            eprintln!("skipped: set RV_SWITCH_DEVICE to switch the real default device");
+            return;
+        }
+        let mut backend = Wasapi::new();
+        let devices = backend.list_output_devices().expect("listing devices");
+        let original = devices.iter().find(|d| d.default).expect("a default");
+        let other = devices
+            .iter()
+            .find(|d| !d.default)
+            .expect("a second device");
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        assert!(watch(Box::new(move || {
+            let _ = tx.lock().unwrap().send(());
+        })));
+
+        backend
+            .set_default_output_device(&other.id)
+            .expect("switch");
+        let now = backend.list_output_devices().unwrap();
+        let restored = backend.set_default_output_device(&original.id);
+        assert!(now.iter().any(|d| d.default && d.id == other.id), "{now:?}");
+        restored.expect("switch back");
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a notification for the switch");
     }
 
     /// Talks to the real audio service: an empty list on a machine without output devices.
