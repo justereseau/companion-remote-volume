@@ -22,6 +22,11 @@
 	},
 	"packageRules": [
 		{
+			"description": "windows-core has to stay on the version the windows crate depends on: two versions break the COM traits used by the audio code (the build fails). Bump both by hand when a windows release moves to a new windows-core.",
+			"matchPackageNames": ["windows-core"],
+			"enabled": false
+		},
+		{
 			"description": "All minor and patch updates (Rust crates and GitHub Actions) in one weekly PR. Not automerged because it contains crates that ship in the app; fix(deps) so release-please cuts a patch release. Major updates keep their own PR.",
 			"matchUpdateTypes": ["minor", "patch"],
 			"groupName": "non-major dependencies",
