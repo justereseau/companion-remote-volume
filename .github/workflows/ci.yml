@@ -296,9 +296,9 @@ jobs:
 
   # release-please keeps a release PR (version bump + CHANGELOG) up to date from the Conventional
   # Commits on main. Merging that PR makes this job create the tag and a draft GitHub release;
-  # `publish` then attaches the builds of the same run and publishes it. Uses the built-in
-  # GITHUB_TOKEN, so the release PR does not trigger CI by itself: run this workflow manually on its
-  # branch before merging.
+  # `publish` then attaches the builds of the same run and publishes it. Without the optional
+  # RELEASE_PLEASE_TOKEN secret it uses the built-in GITHUB_TOKEN, so the release PR does not
+  # trigger CI by itself: run this workflow manually on its branch before merging.
   release-please:
     name: Release PR / tag
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -311,12 +311,31 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
       sha: ${{ steps.release.outputs.sha }}
+    env:
+      HAS_RELEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
     steps:
+      # RELEASE_PLEASE_TOKEN is optional: a personal access token (or GitHub App token) of a
+      # maintainer, with Contents and Pull requests write access. Set, the release PR is opened
+      # with it, so CI starts by itself on that PR, and GitHub merges the PR once the required
+      # checks pass. Not set, it falls back to the built-in token and the PR is merged by hand.
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
         with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # The merge must be made with that same token: a merge made with the built-in token would not
+      # start the run on `main` that creates the tag and the release. So nothing is enabled without it.
+      - name: Merge the release PR when its checks pass
+        if: steps.release.outputs.prs_created == 'true' && env.HAS_RELEASE_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for pr in $(gh pr list --state open --label 'autorelease: pending' --json number --jq '.[].number'); do
+            gh pr merge "$pr" --auto --merge
+          done
 
   publish:
     name: Attach binaries and publish release
