@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.1](https://github.com/justereseau/companion-remote-volume/compare/v1.8.0...v1.8.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **settings:** reload the page once the app has updated ([8fd98c8](https://github.com/justereseau/companion-remote-volume/commit/8fd98c85ea509b8f501b674f79ece66264cdbf17))
+* **settings:** reload the page once the app has updated ([44d8c09](https://github.com/justereseau/companion-remote-volume/commit/44d8c09cbf9686903e8766fa9144a4fc9b3fd033))
+
 ## [1.8.0](https://github.com/justereseau/companion-remote-volume/compare/v1.7.3...v1.8.0) (2026-11-09)
 
 
