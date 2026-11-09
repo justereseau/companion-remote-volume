@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.1](https://github.com/justereseau/companion-remote-volume/compare/v1.9.0...v1.9.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **deps:** update taiki-e/install-action action to v2.90.3 ([cda4c63](https://github.com/justereseau/companion-remote-volume/commit/cda4c63ead2da5f477d6a330c4937f7f9eb11b4c))
+* **deps:** update taiki-e/install-action action to v2.90.3 ([49f9cb0](https://github.com/justereseau/companion-remote-volume/commit/49f9cb0a84b0cbcaf1625d8984ad6ee775943c56))
+
 ## [1.9.0](https://github.com/justereseau/companion-remote-volume/compare/v1.8.2...v1.9.0) (2026-11-09)
 
 
