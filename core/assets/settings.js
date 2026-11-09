@@ -88,6 +88,19 @@ const showUpdate = (update) => {
 	$('updateStatus').textContent = `Version ${update.current}.${message}`
 }
 
+// The version this page came from. Once the app runs another one, the page is out of date.
+let pageVersion = null
+// Checked this often when nothing is going on, so a page left open also follows an update that
+// the app started by itself.
+const IDLE_REFRESH_MS = 30000
+
+// One check pending at most, so asking for one never adds a second loop.
+let refreshTimer = null
+const refreshIn = (ms) => {
+	clearTimeout(refreshTimer)
+	refreshTimer = setTimeout(refreshUpdate, ms)
+}
+
 const refreshUpdate = async () => {
 	let update
 	try {
@@ -97,11 +110,18 @@ const refreshUpdate = async () => {
 	} catch {
 		// The app restarts at the end of an update, and the page reconnects on its own.
 		$('updateStatus').textContent = 'Waiting for the app to come back...'
-		setTimeout(refreshUpdate, 2000)
+		refreshIn(2000)
+		return
+	}
+	if (pageVersion === null) pageVersion = update.current
+	if (update.current !== pageVersion) {
+		// Reload everything: the page, the script and the settings come from the new version.
+		$('updateStatus').textContent = `Updated to ${update.current}. Reloading...`
+		location.reload()
 		return
 	}
 	showUpdate(update)
-	if (BUSY_STATES.includes(update.state)) setTimeout(refreshUpdate, 1000)
+	refreshIn(BUSY_STATES.includes(update.state) ? 1000 : IDLE_REFRESH_MS)
 }
 
 const updateNow = async () => {
@@ -111,7 +131,7 @@ const updateNow = async () => {
 		const response = await fetch('/api/update', { method: 'POST' })
 		const result = await response.json().catch(() => ({}))
 		if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`)
-		setTimeout(refreshUpdate, 500)
+		refreshIn(500)
 	} catch (error) {
 		$('updateStatus').textContent = `Could not start the update: ${error.message}`
 		$('updateNow').disabled = false
