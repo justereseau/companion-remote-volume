@@ -119,7 +119,8 @@ impl Capabilities {
 }
 
 /// Features of the WebSocket protocol v2 (per-app audio, device selection) that this machine
-/// supports right now. Windows and Linux (Pulse) report per-app audio; macOS reports none yet.
+/// supports right now. Windows and Linux (Pulse) report per-app audio; device selection is on every
+/// OS, except Linux without a Pulse server.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Features {
     pub devices_list: bool,
@@ -155,6 +156,14 @@ pub trait Backend {
     /// answer can change at runtime, e.g. when a Pulse server starts). Default: none.
     fn features(&mut self) -> Features {
         Features::default()
+    }
+    /// Make the device with this `id` (from [`Backend::list_output_devices`]) the default output.
+    /// Default: unsupported.
+    fn set_default_output_device(&mut self, _id: &str) -> AudioResult<()> {
+        Err(AudioError::new(
+            ErrorCode::Unsupported,
+            "switching the output device is not supported on this OS",
+        ))
     }
     /// Every audio session of every app, on every active output device. Default: unsupported.
     fn list_app_sessions(&mut self) -> AudioResult<Vec<AppSession>> {
@@ -201,11 +210,16 @@ fn unsupported_apps() -> AudioError {
 /// Starts watching the OS for audio changes made outside this app (another mixer, an app starting
 /// or stopping, the default device changing), on a thread of its own, and calls `changed` after
 /// each; the caller reads the new state itself. Returns false where the backend has no change
-/// events (Windows and macOS for now): polling is then the only way to see such changes.
+/// events: polling is then the only way to see such changes. Linux reports every change; Windows
+/// and macOS report the default device and the device list, not volume, mute or apps.
 pub fn watch(changed: Box<dyn Fn() + Send>) -> bool {
     #[cfg(target_os = "linux")]
     return pulse::watch(changed);
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    return wasapi::watch(changed);
+    #[cfg(target_os = "macos")]
+    return coreaudio::watch(changed);
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let _ = changed;
         false

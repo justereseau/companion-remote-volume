@@ -9,6 +9,7 @@ pub mod audio;
 pub mod backend;
 pub mod cli;
 pub mod config;
+pub mod devices;
 pub mod install;
 pub mod log;
 pub mod protocol;

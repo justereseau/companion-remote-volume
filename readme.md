@@ -212,11 +212,14 @@ A refused or failed action is answered with `{ "action": "<action>", "response":
 | `Invalid action` | Unknown `action` |
 | `Invalid value for <action>. …` | `value` missing, not an integer or out of range |
 | `Invalid app for <action>. …` | `app` missing, not a string, empty, over 256 characters or with control characters |
+| `Invalid device for <action>. …` | The same for `device` |
+| `Invalid devices for <action>. …` | `devices` not a list, or one of its entries is not a valid `device` |
 | `Failed to process message` | Not a JSON object |
 | `Failed to execute action` | The OS call failed |
 | `Rate limit exceeded` | More than 20 messages/second |
 | `Not supported on this OS` | Protocol v2: the feature is unavailable here (see `capabilities`) |
 | `App not found` | Protocol v2: no running app matches `app` |
+| `Device not found` | Protocol v2: no output device matches `device` or `devices` |
 | `No media player found` | Protocol v2: a media key was sent but no media player is running (Linux) |
 
 ## Protocol v2
@@ -236,7 +239,7 @@ What this computer supports right now. It depends on the OS and on the moment (f
 	"capabilities": {
 		"protocolVersion": 2,
 		"version": "1.7.1",
-		"outputDevices": { "list": false, "select": false },
+		"outputDevices": { "list": true, "select": true },
 		"apps": { "volume": true, "mute": true },
 		"media": { "keys": true },
 		"keyboard": { "functionKeys": true }
@@ -246,7 +249,7 @@ What this computer supports right now. It depends on the OS and on the moment (f
 
 `version` is the version of the running app; a build from source adds `-dev`, and older apps do not send it.
 
-An action whose capability is `false` is answered with `Not supported on this OS` and does nothing. `outputDevices` is reserved for device selection, which is not implemented yet. Capabilities are not pushed when they change; ask again with `getCapabilities`.
+An action whose capability is `false` is answered with `Not supported on this OS` and does nothing. Capabilities are not pushed when they change; ask again with `getCapabilities`.
 
 ### Per-app volume and mute
 
@@ -286,6 +289,49 @@ Like the v1 commands, the changing actions send no reply: the new `apps` list is
 | Windows | yes | yes | supported. Changes made in the Windows mixer are picked up by polling |
 | macOS | no | maybe on 14.2+ | being investigated ([#19](https://github.com/Justereseau/companion-remote-volume/issues/19)) |
 | Linux, ALSA only | no | no | not possible |
+
+### Output devices
+
+List the output devices and switch the default one, for example one button that toggles between speakers and headset. Volume and mute always apply to the default device, so they follow the switch.
+
+An output device has an `id`, stable and specific to the OS (not meant for people), a `name`, and `default`, which is `true` on the current default device.
+
+**State:** `outputDevice` (the name of the default device) stays as it was. `outputDeviceId` is its id, or `null` when there is none, and `outputDevices` is the whole list. Both are part of the state sent on connect and of `getState`. The list is pushed again whenever anything in it changes (a device plugged in or removed, another default):
+
+```json
+{
+	"outputDeviceId": "{0.0.0.00000000}.{a1b2}",
+	"outputDevices": [
+		{ "id": "{0.0.0.00000000}.{a1b2}", "name": "Speakers (Realtek)", "default": true },
+		{ "id": "{0.0.0.00000000}.{c3d4}", "name": "Headset", "default": false }
+	]
+}
+```
+
+Both are absent where devices cannot be listed. A client that had a list gets `null` for them when that changes.
+
+**Actions:**
+
+| Action | Payload | Capability |
+|---|---|---|
+| `getOutputDevices` | `{ "action": "getOutputDevices" }`, replies `{ "outputDevices": [...] }` | `outputDevices.list` |
+| `setOutputDevice` | `{ "action": "setOutputDevice", "device": "Headset" }` | `outputDevices.select` |
+| `cycleOutputDevice` | `{ "action": "cycleOutputDevice" }`, or with `"devices": ["Speakers (Realtek)", "Headset"]` | `outputDevices.select` |
+
+- `device` and the entries of `devices` are an id, or an exact name as a fallback. If several devices share a name, the first one is used and a warning is logged.
+- `cycleOutputDevice` switches to the next device, in the order of `devices` (every device when it is absent or empty), wrapping around. When the default device is not among them it switches to the first one. Entries that match nothing, such as a headset unplugged right now, are skipped; when none is left, the reply is `Device not found`. The whole message must fit the 1 KB limit, which leaves room for about 10 ids.
+- Like the v1 commands, these send no reply on success: `volume`, `muted`, `outputDevice`, `outputDeviceId` and `outputDevices` are pushed to every client for the new device.
+
+**Support:**
+
+| OS | List | Switch | Status |
+|---|---|---|---|
+| Windows | yes | yes | supported, on the console and multimedia roles like the Sound panel (the communications default is left alone) |
+| macOS | yes | yes | supported. A device with no volume control (HDMI) cannot report `volume`, so the state is not pushed while it is the default |
+| Linux, PulseAudio / PipeWire | yes | yes | supported. On PulseAudio running streams are moved to the new device; PipeWire does that itself |
+| Linux, ALSA only | no | no | not possible |
+
+A change of device made outside the app is pushed without polling on every OS.
 
 ### Media keys
 

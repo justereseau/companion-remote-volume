@@ -35,6 +35,8 @@ struct FakeState {
     fail_mute: bool,
     /// Makes volume reads slow, like a real OS call.
     read_delay_ms: u64,
+    /// Output devices; `None` = just `device`, as the default one.
+    devices: Option<Vec<Device>>,
     /// Per-app sessions; `None` = per-app audio unsupported (the default, like every OS today).
     sessions: Option<Vec<AppSession>>,
     fail_apps: bool,
@@ -56,6 +58,9 @@ impl Backend for FakeBackend {
     }
     fn list_output_devices(&mut self) -> AudioResult<Vec<Device>> {
         let s = self.0.lock().unwrap();
+        if let Some(devices) = &s.devices {
+            return Ok(devices.clone());
+        }
         Ok(s.device
             .iter()
             .map(|name| Device {
@@ -64,6 +69,21 @@ impl Backend for FakeBackend {
                 default: true,
             })
             .collect())
+    }
+    fn set_default_output_device(&mut self, id: &str) -> AudioResult<()> {
+        let mut s = self.0.lock().unwrap();
+        s.calls.push(format!("setDevice {id}"));
+        if let Some(code) = s.media_error {
+            return Err(AudioError::new(code, "cannot switch"));
+        }
+        let devices = s.devices.as_mut().expect("a device list");
+        for device in devices.iter_mut() {
+            device.default = device.id == id;
+        }
+        // The new device has its own volume and mute.
+        s.volume = 77;
+        s.muted = true;
+        Ok(())
     }
     fn get_volume(&mut self) -> AudioResult<u8> {
         let mut s = self.0.lock().unwrap();
@@ -188,6 +208,7 @@ async fn env_with(config: Config, ext: Extensions) -> Env {
         fail_volume_reads: false,
         fail_mute: false,
         read_delay_ms: 0,
+        devices: None,
         sessions: None,
         fail_apps: false,
         media_error: None,
@@ -924,6 +945,7 @@ fn blank_state() -> FakeState {
         fail_volume_reads: false,
         fail_mute: false,
         read_delay_ms: 0,
+        devices: None,
         sessions: None,
         fail_apps: false,
         media_error: None,
@@ -1099,7 +1121,232 @@ async fn function_keys_reach_the_backend_or_are_refused() {
     );
 }
 
-// Device actions come with #12. These tests plug a stand-in ("things") into the extension points to
+// ---- output devices -----------------------------------------------------------------------------
+
+fn three_devices() -> Vec<Device> {
+    [
+        ("a", "Speakers", true),
+        ("b", "Headset", false),
+        ("c", "HDMI", false),
+    ]
+    .map(|(id, name, default)| Device {
+        id: id.into(),
+        name: name.into(),
+        default,
+    })
+    .to_vec()
+}
+
+async fn env_with_devices() -> Env {
+    let env = env().await;
+    env.set(|s| {
+        s.devices = Some(three_devices());
+        s.features.devices_list = true;
+        s.features.devices_select = true;
+    });
+    env
+}
+
+const THREE_DEVICES: &str = r#"[{"id":"a","name":"Speakers","default":true},{"id":"b","name":"Headset","default":false},{"id":"c","name":"HDMI","default":false}]"#;
+
+#[tokio::test]
+async fn the_initial_state_carries_the_devices_where_they_can_be_listed() {
+    let env = env_with_devices().await;
+    let mut c = env.connect().await;
+    let first = c.next().await.to_string();
+    assert!(
+        first.starts_with(&format!(
+            r#"{{"volume":40,"muted":false,"outputDevice":"Speakers","outputDeviceId":"a","outputDevices":{THREE_DEVICES},"capabilities":"#
+        )),
+        "{first}"
+    );
+    c.send(json!({"action":"getOutputDevices"})).await;
+    assert_eq!(
+        c.next().await.to_string(),
+        format!(r#"{{"outputDevices":{THREE_DEVICES}}}"#)
+    );
+    c.send(json!({"action":"getState"})).await;
+    assert_eq!(c.next().await["outputDeviceId"], "a");
+}
+
+#[tokio::test]
+async fn device_actions_are_refused_where_unsupported() {
+    let env = env().await;
+    let mut c = env.connect().await;
+    let first = c.next().await;
+    assert!(first.get("outputDevices").is_none(), "{first}");
+    assert!(first.get("outputDeviceId").is_none(), "{first}");
+    for message in [
+        json!({"action":"getOutputDevices"}),
+        json!({"action":"setOutputDevice","device":"a"}),
+        json!({"action":"cycleOutputDevice"}),
+    ] {
+        let action = message["action"].clone();
+        c.send(message).await;
+        assert_eq!(
+            c.next().await,
+            json!({"action":action,"response":{"error":"Not supported on this OS"}})
+        );
+    }
+    assert!(env.calls().is_empty());
+}
+
+#[tokio::test]
+async fn listing_without_selecting_lists_but_does_not_switch() {
+    let env = env_with_devices().await;
+    env.set(|s| s.features.devices_select = false);
+    let mut c = env.connect().await;
+    c.next().await;
+    c.send(json!({"action":"setOutputDevice","device":"b"}))
+        .await;
+    assert_eq!(
+        c.next().await["response"]["error"],
+        "Not supported on this OS"
+    );
+    c.send(json!({"action":"getOutputDevices"})).await;
+    assert_eq!(c.next().await["outputDevices"][0]["id"], "a");
+}
+
+#[tokio::test]
+async fn switching_by_id_or_name_pushes_the_state_of_the_new_device() {
+    let env = env_with_devices().await;
+    let mut c = env.connect().await;
+    c.next().await;
+    c.send(json!({"action":"setOutputDevice","device":"b"}))
+        .await;
+    // No reply to the command: one message per changed field.
+    assert_eq!(c.next().await, json!({"volume":77}));
+    assert_eq!(c.next().await, json!({"muted":true}));
+    assert_eq!(c.next().await, json!({"outputDevice":"Headset"}));
+    assert_eq!(c.next().await, json!({"outputDeviceId":"b"}));
+    let list = c.next().await;
+    assert_eq!(list["outputDevices"][1]["default"], true);
+    assert_eq!(list["outputDevices"][0]["default"], false);
+
+    c.send(json!({"action":"setOutputDevice","device":"HDMI"}))
+        .await;
+    c.until(|m| m["outputDeviceId"] == "c").await;
+    assert_eq!(env.calls(), ["setDevice b", "setDevice c"]);
+}
+
+#[tokio::test]
+async fn an_unknown_device_is_device_not_found_and_switches_nothing() {
+    let env = env_with_devices().await;
+    let mut c = env.connect().await;
+    c.next().await;
+    c.send(json!({"action":"setOutputDevice","device":"nope"}))
+        .await;
+    assert_eq!(
+        c.next().await.to_string(),
+        r#"{"action":"setOutputDevice","response":{"error":"Device not found"}}"#
+    );
+    c.send(json!({"action":"cycleOutputDevice","devices":["gone","nope"]}))
+        .await;
+    assert_eq!(c.next().await["response"]["error"], "Device not found");
+    assert!(env.calls().is_empty());
+    assert!(env
+        .log
+        .lines()
+        .iter()
+        .any(|l| l.contains("Device not found")));
+}
+
+#[tokio::test]
+async fn a_bad_device_message_is_refused_before_it_reaches_the_backend() {
+    let env = env_with_devices().await;
+    let mut c = env.connect().await;
+    c.next().await;
+    c.send(json!({"action":"setOutputDevice"})).await;
+    assert!(c.next().await["response"]["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("Invalid device for setOutputDevice."));
+    c.send(json!({"action":"cycleOutputDevice","devices":"a"}))
+        .await;
+    assert!(c.next().await["response"]["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("Invalid devices for cycleOutputDevice."));
+    assert!(env.calls().is_empty());
+}
+
+#[tokio::test]
+async fn cycling_goes_through_all_devices_or_toggles_a_subset() {
+    let env = env_with_devices().await;
+    let mut c = env.connect().await;
+    c.next().await;
+    c.send(json!({"action":"cycleOutputDevice"})).await;
+    c.until(|m| m["outputDeviceId"] == "b").await;
+    c.send(json!({"action":"cycleOutputDevice"})).await;
+    c.until(|m| m["outputDeviceId"] == "c").await;
+    c.send(json!({"action":"cycleOutputDevice"})).await;
+    c.until(|m| m["outputDeviceId"] == "a").await;
+    let toggle = json!({"action":"cycleOutputDevice","devices":["a","HDMI"]});
+    c.send(toggle.clone()).await;
+    c.until(|m| m["outputDeviceId"] == "c").await;
+    c.send(toggle).await;
+    c.until(|m| m["outputDeviceId"] == "a").await;
+    assert_eq!(
+        env.calls(),
+        [
+            "setDevice b",
+            "setDevice c",
+            "setDevice a",
+            "setDevice c",
+            "setDevice a"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_shared_name_uses_the_first_device_and_logs_a_warning() {
+    let env = env_with_devices().await;
+    env.set(|s| s.devices.as_mut().unwrap()[2].name = "Headset".into());
+    let mut c = env.connect().await;
+    c.next().await;
+    c.send(json!({"action":"setOutputDevice","device":"Headset"}))
+        .await;
+    c.until(|m| m["outputDeviceId"] == "b").await;
+    assert!(env
+        .log
+        .lines()
+        .iter()
+        .any(|l| l.contains("several devices are named")));
+}
+
+#[tokio::test]
+async fn a_device_list_change_is_pushed_and_a_failed_switch_is_reported() {
+    let env = env_with_devices().await;
+    let mut c = env.connect().await;
+    c.next().await;
+    env.set(|s| {
+        s.devices.as_mut().unwrap().pop(); // unplugged
+    });
+    env.server.refresh().await;
+    assert_eq!(c.next().await["outputDevices"].as_array().unwrap().len(), 2);
+    c.quiet().await;
+
+    env.set(|s| s.media_error = Some(ErrorCode::Internal));
+    c.send(json!({"action":"setOutputDevice","device":"b"}))
+        .await;
+    assert_eq!(
+        c.next().await["response"]["error"],
+        "Failed to execute action"
+    );
+    env.set(|s| s.media_error = Some(ErrorCode::NoDevice));
+    c.send(json!({"action":"setOutputDevice","device":"b"}))
+        .await;
+    assert_eq!(c.next().await["response"]["error"], "Device not found");
+    env.set(|s| s.media_error = Some(ErrorCode::Unsupported));
+    c.send(json!({"action":"setOutputDevice","device":"b"}))
+        .await;
+    assert_eq!(
+        c.next().await["response"]["error"],
+        "Not supported on this OS"
+    );
+}
+
+// These tests plug a stand-in ("things") into the extension points to
 // check the shared machinery: capability gating, string targets, not-found errors, structured state.
 
 struct V2 {

@@ -238,7 +238,7 @@ fn run(options: Options, menu: Option<MenuLink>) -> Result<Ended, String> {
             address.port()
         ));
         if backend::watch(Box::new(server.change_notifier())) {
-            log.info("Watching for volume changes made in other apps.");
+            log.info("Watching for audio changes made in other apps.");
         }
 
         let restart = Arc::new(Notify::new());

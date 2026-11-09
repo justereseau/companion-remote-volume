@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use crate::apps::{self, App};
-use crate::backend::{AudioError, AudioResult, Backend, ErrorCode, Features, MediaKey};
+use crate::backend::{AudioError, AudioResult, Backend, Device, ErrorCode, Features, MediaKey};
+use crate::devices;
 
 type Job = Box<dyn FnOnce(&mut dyn Backend) + Send>;
 
@@ -30,6 +31,8 @@ pub struct AudioState {
     pub muted: bool,
     /// Name of the default output device, `None` when there is none.
     pub output_device: Option<String>,
+    /// Every output device; `None` where listing is unsupported or just failed.
+    pub output_devices: Option<Vec<Device>>,
 }
 
 impl AudioState {
@@ -118,15 +121,17 @@ impl AudioHandle {
         self.run(|b| {
             let volume = b.get_volume()?;
             let muted = b.get_muted()?;
-            let output_device = b
-                .list_output_devices()
-                .ok()
-                .and_then(|devices| devices.into_iter().find(|d| d.default))
-                .map(|d| d.name);
+            let devices = b.list_output_devices().ok();
+            let output_device = devices
+                .as_ref()
+                .and_then(|list| list.iter().find(|d| d.default))
+                .map(|d| d.name.clone());
+            let output_devices = devices.filter(|_| b.features().devices_list);
             Ok(AudioState {
                 volume,
                 muted,
                 output_device,
+                output_devices,
             })
         })
         .await?
@@ -135,6 +140,35 @@ impl AudioHandle {
     /// Protocol v2 features available right now.
     pub async fn features(&self) -> AudioResult<Features> {
         self.run(|b| b.features()).await
+    }
+
+    pub async fn list_output_devices(&self) -> AudioResult<Vec<Device>> {
+        self.run(|b| b.list_output_devices()).await?
+    }
+
+    /// Make the device `target` names the default output. Looks it up and switches in one job, so
+    /// it cannot vanish in between. Returns `target` when several devices share that name.
+    pub async fn set_output_device(&self, target: String) -> AudioResult<Vec<String>> {
+        self.run(move |b| {
+            let list = b.list_output_devices()?;
+            let device = devices::resolve(&list, &target).ok_or_else(|| no_device(&target))?;
+            b.set_default_output_device(&device.id)?;
+            Ok(ambiguous(&list, std::slice::from_ref(&target)))
+        })
+        .await?
+    }
+
+    /// Make the next of `targets` (every device when empty) the default output; see
+    /// [`devices::next`]. Returns the targets that are names shared by several devices.
+    pub async fn cycle_output_device(&self, targets: Vec<String>) -> AudioResult<Vec<String>> {
+        self.run(move |b| {
+            let list = b.list_output_devices()?;
+            let device =
+                devices::next(&list, &targets).ok_or_else(|| no_device(&targets.join(", ")))?;
+            b.set_default_output_device(&device.id)?;
+            Ok(ambiguous(&list, &targets))
+        })
+        .await?
     }
 
     /// Every app playing audio, grouped and sorted (see [`crate::apps`]).
@@ -186,6 +220,21 @@ impl AudioHandle {
         })
         .await?
     }
+}
+
+fn no_device(target: &str) -> AudioError {
+    AudioError::new(
+        ErrorCode::NotFound,
+        format!("no output device matches {target:?}"),
+    )
+}
+
+fn ambiguous(list: &[Device], targets: &[String]) -> Vec<String> {
+    targets
+        .iter()
+        .filter(|t| devices::is_ambiguous(list, t))
+        .cloned()
+        .collect()
 }
 
 /// The app a client named, looked up fresh: apps come and go, and Pulse stream indexes don't last.
