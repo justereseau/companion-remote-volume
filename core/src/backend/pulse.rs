@@ -486,7 +486,6 @@ impl Backend for Pulse {
             apps_mute: available,
             media_keys: self.media_keys,
             function_keys: self.function_keys,
-            ..Features::default()
         }
     }
 
