@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/justereseau/companion-remote-volume/compare/v1.8.2...v1.9.0) (2026-11-09)
+
+
+### Features
+
+* **core:** list and switch the output device ([ba55739](https://github.com/justereseau/companion-remote-volume/commit/ba557392d6a7dde4a3f546f18907641e9022ebd5))
+
 ## [1.8.2](https://github.com/justereseau/companion-remote-volume/compare/v1.8.1...v1.8.2) (2026-11-09)
 
 
