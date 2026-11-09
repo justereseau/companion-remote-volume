@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.2](https://github.com/justereseau/companion-remote-volume/compare/v1.8.1...v1.8.2) (2026-11-09)
+
+
+### Bug Fixes
+
+* **deps:** update non-major dependencies ([c0c4721](https://github.com/justereseau/companion-remote-volume/commit/c0c4721f436eb6bcf375dfb2fe63aca6ffd1237a))
+* **deps:** update non-major dependencies ([d5a8234](https://github.com/justereseau/companion-remote-volume/commit/d5a823431a7a6bc395d45cf3225ed2823beb7fcc))
+
 ## [1.8.1](https://github.com/justereseau/companion-remote-volume/compare/v1.8.0...v1.8.1) (2026-11-09)
 
 
