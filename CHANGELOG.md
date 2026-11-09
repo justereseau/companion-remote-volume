@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.3](https://github.com/justereseau/companion-remote-volume/compare/v1.7.2...v1.7.3) (2026-11-09)
+
+
+### Bug Fixes
+
+* **deps:** update rust crate ureq to 3.5.1 ([e1de18b](https://github.com/justereseau/companion-remote-volume/commit/e1de18b68afd359c28341b29f5c6f71a8aa6ddb3))
+* **deps:** update rust crate ureq to 3.5.1 ([c90797d](https://github.com/justereseau/companion-remote-volume/commit/c90797d2e6c65b0457cbf5e8aab27509f8ce6584))
+
 ## [1.7.2](https://github.com/justereseau/companion-remote-volume/compare/v1.7.1...v1.7.2) (2026-11-08)
 
 
