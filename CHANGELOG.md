@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.0](https://github.com/justereseau/companion-remote-volume/compare/v1.7.3...v1.8.0) (2026-11-09)
+
+
+### Features
+
+* **core:** tray icon and menu on Windows and macOS ([4b2be09](https://github.com/justereseau/companion-remote-volume/commit/4b2be092e010f2a3894292afcba6525874cb8c15))
+* **core:** tray icon and menu on Windows and macOS ([b34ebed](https://github.com/justereseau/companion-remote-volume/commit/b34ebed1e21edef2e681e673a486e031f6f7fb29))
+
 ## [1.7.3](https://github.com/justereseau/companion-remote-volume/compare/v1.7.2...v1.7.3) (2026-11-09)
 
 
